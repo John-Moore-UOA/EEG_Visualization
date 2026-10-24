@@ -1,0 +1,8 @@
+{
+ "name": "sleep",
+ "exit": 0,
+ "secs": 0.01,
+ "out": "control got KeyboardInterrupt\n",
+ "client_msgs": 0,
+ "client_end": null
+}

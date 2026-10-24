@@ -1,0 +1,1638 @@
+<!doctype html>
+<!--
+  Scalp Topography: EEG band power on a procedural 3D head (Three.js r169, single file).
+
+  Live data path (LSL -> WebSocket -> this page):
+      pip install pylsl websockets numpy
+      python bridge.py --mock            # synthetic EEG, no hardware
+      python bridge.py                   # real LSL stream of type EEG
+      open  index.html?source=ws&url=ws://localhost:8765
+
+  Minimal bridge, for orientation only (the real one is bridge.py, which also does the Welch PSD):
+      # import asyncio, json, time; from pylsl import StreamInlet, resolve_byprop
+      # from websockets.asyncio.server import serve, broadcast
+      # inlet = StreamInlet(resolve_byprop('type', 'EEG')[0]); clients = set()
+      # async def handler(ws):
+      #     clients.add(ws)
+      #     try: await ws.wait_closed()
+      #     finally: clients.discard(ws)
+      # async def main():
+      #     async with serve(handler, 'localhost', 8765):
+      #         while True:
+      #             bands = compute_band_powers(inlet)          # {band: {channel: uV^2}}
+      #             broadcast(clients, json.dumps({'type': 'bandpower', 't': time.time(), 'bands': bands}))
+      #             await asyncio.sleep(0.1)                   # ~10 Hz
+      # asyncio.run(main())
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scalp Topography</title>
+<meta name="description" content="EEG band power topography on a procedural 3D head, with mock and live WebSocket data.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-0: #07080a; --bg-1: #0b0d10;
+  --panel: rgba(16,19,23,0.74); --panel-solid: #12161b; --panel-hover: #1a1f26;
+  --line: #232830; --line-strong: #2f3640;
+  --text-1: #e8e6e1; --text-2: #a3a7ad; --text-3: #8a9099;
+  --focus: #eeab5b;
+  --status-live: #5fb98a; --status-error: #d66a5e; --status-mock: #8aa4c8; --status-stale: #a3a7ad;
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
+  --inset: 20px;
+  --ease-io: cubic-bezier(.65,0,.35,1); --ease-out: cubic-bezier(.33,1,.68,1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg-1); color: var(--text-1);
+  font: 400 13px/18px var(--sans); -webkit-font-smoothing: antialiased; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.muted { color: var(--text-3); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+#gl { position: fixed; inset: 0; background: radial-gradient(ellipse at 50% 42%, #10141a 0%, #0b0d10 45%, #07080a 100%); }
+#gl canvas { display: block; touch-action: none; }
+#gl .labels { position: absolute; inset: 0; pointer-events: none; }
+#gl.hovering canvas { cursor: pointer; }
+
+.elabel { font: 500 10px/12px var(--mono); letter-spacing: .04em; color: var(--text-1); background: rgba(11,13,16,0.72);
+  border: 1px solid var(--line-strong); border-radius: 4px; padding: 1px 5px; pointer-events: none; white-space: nowrap;
+  transition: opacity 150ms linear, background 120ms, color 120ms; }
+.elabel-wrap { transform: translate(0, -10px); }   /* screen-space lift: clears the cup when the electrode faces the camera */
+.elabel.hl { background: var(--text-1); color: var(--bg-1); border-color: var(--text-1); }
+.axislabel { font: 500 11px/14px var(--mono); color: var(--text-3); pointer-events: none; transition: opacity 150ms; }
+
+#overlay { position: fixed; inset: 0; pointer-events: none; }
+#overlay > * { pointer-events: auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  -webkit-backdrop-filter: blur(14px) saturate(120%); backdrop-filter: blur(14px) saturate(120%); }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel { background: var(--panel-solid); } }
+
+.titleblock { position: absolute; top: var(--inset); left: var(--inset); pointer-events: none; }
+.titleblock h1 { margin: 0; font: 600 15px/20px var(--sans); letter-spacing: .01em; }
+.titleblock p { margin: 2px 0 0; font: 400 12px/16px var(--sans); color: var(--text-3); }
+
+.topright { position: absolute; top: var(--inset); right: var(--inset); display: flex; align-items: center; gap: 12px; }
+.chip { height: 28px; border-radius: 999px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; font-weight: 500; white-space: nowrap; }
+.chip .info { color: var(--text-3); font: 400 12px/16px var(--mono); font-variant-numeric: tabular-nums; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; position: relative; }
+.chip[data-state=mock] .dot { background: var(--status-mock); }
+.chip[data-state=live] .dot { background: var(--status-live); animation: pulse 1.6s var(--ease-out) infinite; }
+.chip[data-state=connecting] .dot { border: 2px solid var(--text-2); border-right-color: transparent; animation: spin 1s linear infinite; }
+.chip[data-state=stale] .dot { border: 2px solid var(--status-stale); background: transparent; }
+.chip[data-state=disconnected] .dot { width: 10px; height: 10px; border-radius: 0; background: none; }
+.chip[data-state=disconnected] .dot::before, .chip[data-state=disconnected] .dot::after { content: ''; position: absolute; left: 4px; top: -1px; width: 2px; height: 12px; background: var(--status-error); border-radius: 1px; transform: rotate(45deg); }
+.chip[data-state=disconnected] .dot::after { transform: rotate(-45deg); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(95,185,138,.5); } 100% { box-shadow: 0 0 0 6px rgba(95,185,138,0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.fps { font: 400 11px/14px var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+.fps.low { color: var(--text-1); }
+
+#controls { position: absolute; top: 76px; left: var(--inset); width: 248px; padding: 0; }
+#controls section { padding: 16px; border-top: 1px solid var(--line); }
+#controls section:first-child { border-top: 0; }
+.sec-label { font: 500 11px/14px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--text-3); margin: 0 0 8px; display: block; }
+.sec-head { display: flex; justify-content: space-between; align-items: baseline; }
+kbd { font: 400 10px/12px var(--mono); color: var(--text-3); border: 1px solid var(--line-strong); border-radius: 4px; padding: 1px 4px; }
+.select-wrap { position: relative; }
+.select-wrap svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-2); }
+select { appearance: none; -webkit-appearance: none; width: 100%; height: 36px; background: #161a20; border: 1px solid var(--line-strong);
+  border-radius: 6px; padding: 0 32px 0 12px; font: 500 13px/18px var(--sans); color: var(--text-1); cursor: pointer; transition: border-color 120ms; }
+select:hover { border-color: #3a424d; }
+select option { background: #12161b; color: #e8e6e1; }
+.caption { margin: 8px 0 0; font: 400 12px/16px var(--sans); color: var(--text-3); }
+
+.seg { display: flex; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; height: 32px; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label { flex: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-2); font-weight: 500;
+  transition: background 120ms, color 120ms; user-select: none; }
+.seg label + input + label, .seg input + label ~ label { border-left: 1px solid var(--line-strong); }
+.seg label:hover { background: var(--panel-hover); }
+.seg input:checked + label { background: #222831; color: var(--text-1); }
+.seg input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ws-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ws-row input { flex: 1 1 100%; }
+.ws-row .btn { flex: 1 1 100%; }
+.ws-row[hidden], #montageRow[hidden] { display: none; }
+.ws-row input { flex: 1; min-width: 0; height: 32px; background: #161a20; border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 8px; font: 400 12px/16px var(--mono); }
+.btn { height: 32px; padding: 0 12px; background: #161a20; border: 1px solid var(--line-strong); border-radius: 6px; cursor: pointer; font-weight: 500; transition: background 120ms, border-color 120ms; }
+.btn:hover { background: var(--panel-hover); border-color: #3a424d; }
+#montageRow { margin-top: 12px; }
+#montageRow .sec-label { margin-bottom: 6px; }
+.views { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.views button { height: 32px; background: transparent; border: 1px solid var(--line-strong); border-radius: 6px; cursor: pointer; color: var(--text-2);
+  font: 500 12px/16px var(--mono); transition: background 120ms, color 120ms; }
+.views button:hover { background: var(--panel-hover); color: var(--text-1); }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { width: 16px; height: 16px; accent-color: var(--focus); margin: 0; }
+#moreBtn { display: none; }
+
+#chToggle { position: absolute; top: 60px; right: var(--inset); display: none; }
+#channels { position: absolute; top: 76px; right: var(--inset); width: 272px; max-height: calc(100vh - 200px); overflow: auto; padding: 16px; }
+#channels table { width: 100%; border-collapse: separate; border-spacing: 4px; margin: -4px; table-layout: fixed; width: calc(100% + 8px); }
+#channels th { font: 500 11px/14px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--text-3); text-align: left; padding: 0 8px 2px; }
+#channels th.rowh { display: none; }
+#channels td { padding: 0; vertical-align: top; }
+#channels td.mid { }
+.midcells { display: grid; gap: 4px; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
+.regionrow td.region { font: 400 11px/14px var(--sans); color: var(--text-3); padding: 6px 4px 0; }
+button.ch { width: 100%; min-height: 40px; padding: 6px 8px; background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+  text-align: left; display: block; position: relative; transition: background 120ms; }
+button.ch:hover, button.ch.hl { background: var(--panel-hover); }
+button.ch.hl::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; background: var(--text-1); border-radius: 1px; }
+button.ch.pinned { border-color: var(--line-strong); }
+.ch .l1, .ch .bar { display: block; }
+.ch .l1 { display: flex; justify-content: space-between; font: 500 12px/16px var(--mono); font-variant-numeric: tabular-nums; }
+.ch .l1 .v { font-weight: 400; }
+.ch .bar { height: 4px; margin-top: 5px; background: #1f242b; border-radius: 2px; overflow: hidden; }
+.ch .bar i { display: block; height: 100%; width: 100%; transform-origin: left center; transform: scaleX(0); border-radius: 2px; }
+.ch canvas { display: block; width: 100%; height: 16px; margin-top: 3px; }
+.ch-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font: 400 12px/18px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ch-foot div { display: flex; justify-content: space-between; }
+.ch-foot .k { font-family: var(--sans); color: var(--text-3); }
+#channels.frozen .ch .bar i, #channels.frozen .ch canvas, #legend.frozen #legendMarker { filter: grayscale(0.7); opacity: .6; }
+#channels.frozen .ch .v { color: var(--text-2); }
+#unplaced { margin-top: 6px; font: 400 11px/14px var(--sans); color: var(--text-3); display: block; }
+
+#legend { position: absolute; bottom: var(--inset); left: 50%; transform: translateX(-50%); width: 320px; padding: 12px 16px; }
+.legend-title { font: 500 12px/16px var(--sans); display: flex; gap: 6px; height: 16px; overflow: hidden; }
+.legend-title .swap { transition: opacity 150ms, transform 250ms var(--ease-out); display: inline-block; }
+.legend-title .swap.out { opacity: 0; transform: translateY(-4px); }
+.bar-wrap { position: relative; margin-top: 8px; height: 10px; }
+#legendBar { height: 10px; border-radius: 2px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); }
+#legendMarker { position: absolute; top: -2px; width: 2px; height: 14px; background: var(--text-1); border-radius: 1px; margin-left: -1px; opacity: 0; transition: opacity 120ms; box-shadow: 0 0 0 1px rgba(11,13,16,.6); }
+.ticks { position: relative; height: 22px; margin-top: 2px; }
+.ticks span { position: absolute; top: 0; font: 400 11px/14px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; padding-top: 6px; transform: translateX(-50%); transition: opacity 150ms; }
+.ticks span::before { content: ''; position: absolute; top: 0; left: 50%; width: 1px; height: 4px; background: var(--text-3); }
+.ticks span.first { transform: none; } .ticks span.first::before { left: 0; }
+.ticks span.last { transform: translateX(-100%); } .ticks span.last::before { left: auto; right: 0; }
+.legend-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; margin-top: 2px; font: 400 11px/14px var(--sans); color: var(--text-3); }
+#coverKey { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+#coverKey[hidden] { display: none; }
+.hatch { width: 8px; height: 8px; border: 1px solid var(--line-strong); background: repeating-linear-gradient(45deg, #8a9099 0 1px, transparent 1px 3px); opacity: .7; }
+
+.hint { position: absolute; left: var(--inset); bottom: var(--inset); font: 400 11px/14px var(--sans); color: var(--text-3); transition: opacity 600ms; pointer-events: none !important; }
+.hint.gone { opacity: 0; }
+.signal { position: absolute; left: 50%; top: 84px; transform: translateX(-50%); text-align: center; pointer-events: none !important; transition: opacity 300ms; }
+.signal[hidden] { display: block; opacity: 0; }
+.signal .t { font: 500 13px/18px var(--sans); color: var(--text-2); }
+.signal .s { font: 400 12px/16px var(--mono); color: var(--text-3); margin-top: 2px; }
+
+.tooltip { position: absolute; left: 0; top: 0; width: 200px; padding: 12px; pointer-events: none !important; z-index: 5; transition: opacity 120ms; }
+.tooltip[hidden] { display: block; opacity: 0; }
+.tooltip .r1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.tooltip .nm { font: 500 13px/16px var(--mono); }
+.tooltip .rg { font: 400 12px/16px var(--sans); color: var(--text-3); text-align: right; }
+.tooltip .r2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; font: 500 18px/22px var(--mono); font-variant-numeric: tabular-nums; }
+.tooltip .r2 small { font: 400 12px/16px var(--mono); color: var(--text-3); }
+.tooltip .sw { width: 10px; height: 10px; border: 1px solid var(--line-strong); flex: none; }
+.tooltip .r3 { margin-top: 2px; font: 400 12px/16px var(--sans); color: var(--text-2); }
+.tooltip canvas { display: block; width: 176px; height: 36px; margin-top: 8px; }
+
+@media (max-width: 1099px) {
+  #chToggle { display: inline-block; }
+  #channels { display: none; top: 100px; z-index: 4; max-height: calc(100vh - 220px); }
+  #channels.open { display: block; }
+}
+@media (max-width: 759px) {
+  :root { --inset: 12px; }
+  .titleblock h1 { font-size: 13px; line-height: 18px; }
+  .titleblock p { display: none; }
+  .fps { display: none; }
+  #chToggle { top: 48px; right: 12px; }
+  #controls { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; border-radius: 12px; max-height: 55vh; overflow: auto; }
+  #controls section { padding: 12px; }
+  #controls .extra { display: none; }
+  #controls.more-open .extra { display: block; }
+  #moreBtn { display: block; width: 100%; height: 44px; background: none; border: 0; border-top: 1px solid var(--line); color: var(--text-2); cursor: pointer; font-weight: 500; }
+  select { height: 44px; }
+  .seg { height: 44px; }
+  #channels { left: 12px; right: 12px; width: auto; top: 88px; max-height: calc(100vh - 340px); }
+  #legend { width: auto; left: 12px; right: 12px; transform: none; bottom: var(--sheet-h, 200px); }
+  .hint { display: none; }
+  .tooltip { display: none; }
+}
+@media (pointer: coarse) {
+  .views button, .btn, button.ch, .seg, .ws-row input { min-height: 44px; }
+  .check input { width: 22px; height: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip .dot { animation: none !important; }
+  * { transition-duration: 150ms !important; }
+}
+@media (forced-colors: active) {
+  .panel { border: 1px solid CanvasText; }
+  .ch .bar i { background: Highlight !important; }
+}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="gl" role="img" aria-label="3D head showing alpha band power across EEG electrodes. See channel table for values."></div>
+
+<div id="overlay">
+  <div class="titleblock">
+    <h1>Scalp Topography</h1>
+    <p id="subtitle">EEG band power · 10–20 montage · 10 ch</p>
+  </div>
+
+  <div class="topright">
+    <div id="chip" class="chip panel" data-state="mock"><span class="dot" aria-hidden="true"></span><span id="chipLabel">Mock</span><span id="chipInfo" class="info">synthetic</span></div>
+    <span id="fps" class="fps" title="Frames per second (F to toggle)">-- fps</span>
+  </div>
+  <div id="srStatus" class="sr-only" aria-live="polite"></div>
+
+  <aside id="controls" class="panel" aria-label="Controls">
+    <section>
+      <div class="sec-head"><label for="band" class="sec-label">Band</label><kbd title="Keyboard shortcut">1–5</kbd></div>
+      <div class="select-wrap">
+        <select id="band">
+          <option value="delta">Delta · 1–4 Hz</option>
+          <option value="theta">Theta · 4–8 Hz</option>
+          <option value="alpha" selected>Alpha · 8–13 Hz</option>
+          <option value="beta">Beta · 13–30 Hz</option>
+          <option value="gamma">Gamma · 30–45 Hz</option>
+        </select>
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <p id="bandDesc" class="caption">Relaxed wakefulness; posterior, eyes closed ↑</p>
+    </section>
+    <section>
+      <span class="sec-label" id="srcLabel">Source</span>
+      <div class="seg" role="radiogroup" aria-labelledby="srcLabel">
+        <input type="radio" name="src" id="srcMock" value="mock" checked><label for="srcMock">Mock</label>
+        <input type="radio" name="src" id="srcWs" value="ws"><label for="srcWs">WebSocket</label>
+      </div>
+      <div id="wsRow" class="ws-row" hidden>
+        <input id="wsUrl" type="text" spellcheck="false" autocomplete="off" aria-label="WebSocket URL" value="ws://localhost:8765">
+        <button id="wsBtn" class="btn" type="button">Connect</button>
+      </div>
+      <div id="montageRow">
+        <span class="sec-label" id="montLabel">Montage</span>
+        <div class="seg" role="radiogroup" aria-labelledby="montLabel">
+          <input type="radio" name="mont" id="mont10" value="10" checked><label for="mont10">10 ch</label>
+          <input type="radio" name="mont" id="mont19" value="19"><label for="mont19">19 ch</label>
+        </div>
+      </div>
+    </section>
+    <section class="extra">
+      <span class="sec-label">View</span>
+      <div class="views">
+        <button type="button" data-view="home" aria-label="Home view" title="Home (¾ view)">⌂</button>
+        <button type="button" data-view="top" aria-label="Top view" title="Top">T</button>
+        <button type="button" data-view="front" aria-label="Front view" title="Front">F</button>
+        <button type="button" data-view="left" aria-label="Left view" title="Left">L</button>
+        <button type="button" data-view="right" aria-label="Right view" title="Right">R</button>
+        <button type="button" data-view="back" aria-label="Back view" title="Back">B</button>
+      </div>
+    </section>
+    <section class="extra">
+      <label class="check"><input type="checkbox" id="lock"> Lock scale</label>
+      <p class="caption" id="scaleCaption">Auto range · 2nd–98th pct · 20 s</p>
+    </section>
+    <button id="moreBtn" type="button" aria-expanded="false">More</button>
+  </aside>
+
+  <button id="chToggle" class="btn panel" type="button" aria-expanded="false" aria-controls="channels">Channels</button>
+  <aside id="channels" class="panel" aria-label="Channels">
+    <span class="sec-label">Channels</span>
+    <table id="chTable">
+      <caption class="sr-only" id="chCaption">Band power by channel, alpha</caption>
+      <thead><tr><th scope="col">Left</th><th scope="col">Right</th></tr></thead>
+      <tbody id="chBody"></tbody>
+    </table>
+    <div class="ch-foot">
+      <div><span class="k">Mean</span><span id="meanVal">--</span></div>
+      <div><span class="k" title="(R−L)/(R+L), averaged over homologous pairs">L–R asymmetry</span><span id="asymVal">--</span></div>
+      <span id="unplaced" hidden></span>
+    </div>
+  </aside>
+
+  <div id="legend" class="panel">
+    <div class="legend-title"><span class="swap" id="legendBand">Alpha power</span><span class="muted swap" id="legendUnit">(µV²)</span></div>
+    <div class="bar-wrap"><div id="legendBar"></div><div id="legendMarker"></div></div>
+    <div class="ticks" id="ticks"></div>
+    <div class="legend-foot"><span id="legendCaption">Per-band auto range</span><span id="coverKey"><i class="hatch" aria-hidden="true"></i>Low electrode coverage</span></div>
+  </div>
+
+  <div id="hint" class="hint">Drag to orbit · Scroll to zoom · 1–5 bands · Esc unpin</div>
+  <div id="signal" class="signal"><div class="t" id="signalTitle">Waiting for data…</div><div class="s" id="signalSub"></div></div>
+
+  <div id="tooltip" class="panel tooltip" hidden aria-hidden="true">
+    <div class="r1"><span class="nm" id="ttName">O1</span><span class="rg" id="ttRegion">Left occipital</span></div>
+    <div class="r2"><span id="ttValue">--</span><small id="ttUnit">µV²</small><span class="sw" id="ttSwatch"></span></div>
+    <div class="r3" id="ttPct">--</div>
+    <canvas id="ttSpark" width="176" height="36"></canvas>
+  </div>
+</div>
+
+<script type="module">
+// Three.js is imported here because ES module imports must be at the top.
+// ONLY the RENDERING section uses these; CONFIG / DATA LAYER / NORMALISATION are pure JS.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// =====================================================================================
+// ===== CONFIG =====
+// =====================================================================================
+const PARAMS = new URLSearchParams(location.search);
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const IS_PHONE = () => innerWidth < 760;
+
+const CONFIG = {
+  bands: ['delta', 'theta', 'alpha', 'beta', 'gamma'],
+  defaultBand: 'alpha',
+  bandInfo: {
+    delta: { label: 'Delta', hz: '1–4 Hz',   desc: 'Deep sleep; frontal blink artefact' },
+    theta: { label: 'Theta', hz: '4–8 Hz',   desc: 'Drowsiness, working memory' },
+    alpha: { label: 'Alpha', hz: '8–13 Hz',  desc: 'Relaxed wakefulness; posterior, eyes closed ↑' },
+    beta:  { label: 'Beta',  hz: '13–30 Hz', desc: 'Active thinking, motor' },
+    gamma: { label: 'Gamma', hz: '30–45 Hz', desc: 'High-freq; often muscle (EMG) artefact' },
+  },
+  wsDefaultUrl: 'ws://localhost:8765',
+  mockRateHz: 10,
+  staleMs: 1000,
+  staleChannelMs: 2000,       // a channel missing from messages this long is greyed and dropped from the fit
+  staleReconnectMs: 10000,    // a socket that stays Stale this long (half-open) is closed and reconnected
+  backoffSec: [1, 2, 4, 8, 10],
+  historyLen: 100,            // 10 s at 10 Hz (sparklines)
+  rangeWindow: 200,           // 20 s of frames for the adaptive range
+  rangePct: [0.02, 0.98],
+  rangeEveryMs: 500,
+  rangeTau: 4,                // s, smoothing of lo/hi (release)
+  rangeAttackTau: 0.6,        // s, hi follows bursts upward this fast
+  smoothTau: 0.12,            // s, display smoothing
+  bandMixMs: REDUCED_MOTION ? 150 : 600,
+  sweepMs: 700,
+  // NB: IcosahedronGeometry 'detail' is LINEAR in three r125+ (20*(d+1)^2 tris), not recursive as the spec assumed.
+  headDetail: 40,             // ~8.8k tris: still visibly faceted, fine enough for nose/brow/sockets
+  shellDetail: 36,            // ~27k tris before culling (~16k kept), smooth heatmap skin
+  dprCap: 2, dprCapPhone: 1.5,
+  bloom: { strength: 0.65, radius: 0.35, threshold: 0.9 },
+  colormap: PARAMS.get('cmap') === 'ember' ? 'ember' : 'dusk',
+  autoDegrade: PARAMS.get('degrade') !== '0',
+};
+
+// Sequential colormaps (sRGB stops, evenly spaced). Both validated with the dataviz validator
+// (--ordinal --mode dark --surface #0b0d10: monotone L, adjacent dL >= 0.06, low end >= 2:1).
+// 'dusk' (default) = OKLCH L 0.42 -> 0.96, hue plum -> rose -> ember -> amber -> bone. See team/CODER_NOTES.md.
+// 'ember' = the design spec's single-hue ramp (?cmap=ember).
+const COLORMAPS = {
+  ember: ['#663b26', '#90502b', '#b9692d', '#da893a', '#eeab5b', '#fad094', '#fdecd1'],
+  dusk:  ['#603d6b', '#8f4471', '#bb5069', '#dc665a', '#f28651', '#fcab60', '#ffd08c', '#fef1d0'],
+};
+
+// 10-20 MONTAGE: the single source of truth for electrode identity and position.
+// BESA spherical convention: theta = signed inclination from Cz (deg, negative = left), phi = azimuth (deg).
+// Conversion: x = sin(th)cos(ph), yFront = sin(th)sin(ph), zUp = cos(th) -> world (X, Y, Z) = (x, zUp, yFront).
+// World axes: +Y = superior (vertex), +Z = anterior (nose), -X = subject's LEFT. Odd numbers land at x < 0.
+// Adding a channel = adding a row. Nothing else changes.
+const MONTAGE = [
+  // name   theta  phi   region                      side  row                 default10
+  { name: 'Fp1', th: -92, ph: -72, region: 'Left prefrontal',          side: 'L', row: 'Prefrontal',         d10: true },
+  { name: 'Fp2', th:  92, ph:  72, region: 'Right prefrontal',         side: 'R', row: 'Prefrontal',         d10: true },
+  { name: 'F7',  th: -92, ph: -36, region: 'Left inferior frontal',    side: 'L', row: 'Inferior frontal' },
+  { name: 'F8',  th:  92, ph:  36, region: 'Right inferior frontal',   side: 'R', row: 'Inferior frontal' },
+  { name: 'F3',  th: -60, ph: -51, region: 'Left frontal',             side: 'L', row: 'Frontal',            d10: true },
+  { name: 'F4',  th:  60, ph:  51, region: 'Right frontal',            side: 'R', row: 'Frontal',            d10: true },
+  { name: 'T7',  th: -92, ph:   0, region: 'Left temporal',            side: 'L', row: 'Temporal' },
+  { name: 'T8',  th:  92, ph:   0, region: 'Right temporal',           side: 'R', row: 'Temporal' },
+  { name: 'C3',  th: -46, ph:   0, region: 'Left central',             side: 'L', row: 'Central',            d10: true },
+  { name: 'C4',  th:  46, ph:   0, region: 'Right central',            side: 'R', row: 'Central',            d10: true },
+  { name: 'P7',  th: -92, ph:  36, region: 'Left posterior temporal',  side: 'L', row: 'Posterior temporal' },
+  { name: 'P8',  th:  92, ph: -36, region: 'Right posterior temporal', side: 'R', row: 'Posterior temporal' },
+  { name: 'P3',  th: -60, ph:  51, region: 'Left parietal',            side: 'L', row: 'Parietal',           d10: true },
+  { name: 'P4',  th:  60, ph: -51, region: 'Right parietal',           side: 'R', row: 'Parietal',           d10: true },
+  { name: 'O1',  th: -92, ph:  72, region: 'Left occipital',           side: 'L', row: 'Occipital',          d10: true },
+  { name: 'O2',  th:  92, ph: -72, region: 'Right occipital',          side: 'R', row: 'Occipital',          d10: true },
+  { name: 'Fz',  th:  46, ph:  90, region: 'Midline frontal',          side: 'M', row: 'Midline' },
+  { name: 'Cz',  th:   0, ph:   0, region: 'Vertex',                   side: 'M', row: 'Midline' },
+  { name: 'Pz',  th:  46, ph: -90, region: 'Midline parietal',         side: 'M', row: 'Midline' },
+];
+const TABLE_ROWS = ['Prefrontal', 'Inferior frontal', 'Frontal', 'Temporal', 'Central', 'Posterior temporal', 'Parietal', 'Occipital', 'Midline'];
+const D2R = Math.PI / 180;
+for (const m of MONTAGE) {
+  const th = m.th * D2R, ph = m.ph * D2R;
+  m.dir = [-Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)];
+}
+const MONTAGE_BY_NAME = new Map(MONTAGE.map(m => [m.name.toLowerCase(), m]));
+const montageFor = name => MONTAGE_BY_NAME.get(String(name).toLowerCase()) || null;
+
+// Colormap lookup: the ONE function every surface uses (heatmap LUT texture, cores, halos, bars, legend, swatch).
+const CMAP = COLORMAPS[CONFIG.colormap].map(h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]);
+function lut(t, out = [0, 0, 0]) {
+  t = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0));
+  const s = t * (CMAP.length - 1), i = Math.min(CMAP.length - 2, Math.floor(s)), f = s - i;
+  const a = CMAP[i], b = CMAP[i + 1];
+  out[0] = a[0] + (b[0] - a[0]) * f; out[1] = a[1] + (b[1] - a[1]) * f; out[2] = a[2] + (b[2] - a[2]) * f;
+  return out;
+}
+const lutCss = t => { const c = lut(t); return `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`; };
+const lutGradientCss = () => 'linear-gradient(90deg, ' + COLORMAPS[CONFIG.colormap].map((h, i, a) => `${h} ${(i / (a.length - 1) * 100).toFixed(1)}%`).join(', ') + ')';
+
+// =====================================================================================
+// ===== DATA LAYER =====
+// No THREE references below this line until the RENDERING section.
+// Frame (raw, un-normalised) = { t: seconds, units: 'uV^2' | 'relative' | string, bands: { [band]: { [channel]: number } } }
+// DataSource interface: start(), stop(), onFrame(cb), onStatus(cb), get state
+//   state in 'idle' | 'mock' | 'connecting' | 'live' | 'stale' | 'disconnected'
+// =====================================================================================
+class DataSource {
+  constructor() { this._frameCbs = []; this._statusCbs = []; this._state = 'idle'; this._info = {}; }
+  start() {}
+  stop() {}
+  get state() { return this._state; }
+  get info() { return this._info; }
+  onFrame(cb) { this._frameCbs.push(cb); return () => { this._frameCbs = this._frameCbs.filter(f => f !== cb); }; }
+  onStatus(cb) { this._statusCbs.push(cb); cb(this._state, this._info); return () => { this._statusCbs = this._statusCbs.filter(f => f !== cb); }; }
+  _emitFrame(frame) { for (const cb of this._frameCbs) cb(frame); }
+  _setStatus(state, info = {}) { this._state = state; this._info = info; for (const cb of this._statusCbs) cb(state, info); }
+}
+
+// ---- Mock: smooth noise per channel per band, spatially correlated, with "eyes closed" alpha bursts and blinks ----
+function hash01(seed, i) {
+  let h = Math.imul(seed ^ Math.imul(i, 374761393), 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(seed, x) { // smooth 1-D value noise in [-1, 1]
+  const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+  return (hash01(seed, i) * (1 - u) + hash01(seed, i + 1) * u) * 2 - 1;
+}
+const fbm3 = (seed, t) => 0.6 * vnoise(seed, t * 0.07) + 0.3 * vnoise(seed + 101, t * 0.19) + 0.1 * vnoise(seed + 202, t * 0.47);
+
+class MockSource extends DataSource {
+  constructor({ channels, rateHz = CONFIG.mockRateHz } = {}) {
+    super();
+    this.channels = channels || MONTAGE.filter(m => m.d10).map(m => m.name);
+    this.rateHz = rateHz;
+    this.base = { delta: 15, theta: 8, alpha: 12, beta: 3.5, gamma: 0.6 };
+    // latent shared sources -> neighbouring electrodes co-vary (blobs, not salt-and-pepper)
+    const latent = [[0, 0.3, 0.95], [0, 0.3, -0.95], [-0.95, 0.3, 0], [0.95, 0.3, 0], [0, 1, 0]].map(v => { const n = Math.hypot(...v); return v.map(c => c / n); });
+    this.chan = this.channels.map((name, ci) => {
+      const m = montageFor(name), dir = m ? m.dir : [0, 1, 0];
+      const w = latent.map(l => { const ang = Math.acos(Math.max(-1, Math.min(1, dir[0] * l[0] + dir[1] * l[1] + dir[2] * l[2]))); return Math.exp(-((ang / 0.75) ** 2)); });
+      const ws = w.reduce((a, b) => a + b, 0) || 1;
+      return { name, w: w.map(x => x / ws), seed: 1000 + ci * 97 };
+    });
+  }
+  _prior(band, name) {
+    const n = name.toLowerCase();
+    const isF = /^(fp|f)\d|^fz$/.test(n), isFp = /^fp/.test(n);
+    switch (band) {
+      case 'alpha': if (/^o\d/.test(n)) return 2.2; if (/^p\d|^pz$/.test(n)) return 1.6; if (isF) return 0.6; return 1;
+      case 'theta': return /^(f3|f4|fz)$/.test(n) ? 1.5 : 1;
+      case 'beta': return /^(c3|c4|cz)$/.test(n) ? 1.4 : 1;
+      case 'delta': return isFp ? 1.8 : 1;
+      case 'gamma': return /^(t7|t8|f7|f8)$/.test(n) ? 1.5 : 1;
+    }
+    return 1;
+  }
+  start() {
+    this.stop();
+    this._t0 = performance.now() / 1000;
+    this._nextBurst = 6 + Math.random() * 4;           // first burst early so the story shows quickly
+    this._burst = null;
+    this._nextBlink = 2 + Math.random() * 3; this._blinkAt = -10;
+    this._running = true;
+    this._setStatus('mock', { channels: this.channels.length });
+    const tick = () => {
+      if (!this._running) return;
+      this._emitFrame(this._frame(performance.now() / 1000 - this._t0));
+      this._timer = setTimeout(tick, 1000 / this.rateHz + (Math.random() * 16 - 8));
+    };
+    tick();
+  }
+  stop() { this._running = false; clearTimeout(this._timer); }
+  _frame(t) {
+    // events
+    if (!this._burst && t >= this._nextBurst) this._burst = { t0: t, hold: 4 + Math.random() * 2 };
+    let burst = 0;
+    if (this._burst) {
+      const u = t - this._burst.t0, h = this._burst.hold;
+      if (u < 1.5) burst = u / 1.5; else if (u < 1.5 + h) burst = 1; else if (u < 3.5 + h) burst = 1 - (u - 1.5 - h) / 2;
+      else { this._burst = null; this._nextBurst = t + 20 + Math.random() * 20; }
+      burst = burst * burst * (3 - 2 * burst);
+    }
+    if (t >= this._nextBlink) { this._blinkAt = t; this._nextBlink = t + 4 + Math.random() * 3; }
+    const blinkU = (t - this._blinkAt) / 0.3, blink = blinkU >= 0 && blinkU <= 1 ? Math.sin(Math.PI * blinkU) : 0;
+
+    const bands = {};
+    CONFIG.bands.forEach((band, bi) => {
+      const out = {};
+      const lat = [0, 1, 2, 3, 4].map(k => 0.7 * vnoise(9000 + bi * 31 + k * 7, t * 0.05) + 0.3 * vnoise(9500 + bi * 31 + k * 7, t * 0.13));
+      for (const c of this.chan) {
+        let shared = 0; for (let k = 0; k < 5; k++) shared += c.w[k] * lat[k];
+        const own = fbm3(c.seed + bi * 13, t);
+        let v = this.base[band] * this._prior(band, c.name) * (1 + 0.35 * (0.55 * own + 1.4 * shared));
+        const n = c.name.toLowerCase();
+        if (band === 'alpha' && /^(o1|o2|p3|p4|pz)$/.test(n)) v *= 1 + 1.5 * burst * (/^o/.test(n) ? 1 : 0.8);
+        if (band === 'delta' && /^fp/.test(n)) v *= 1 + 2 * blink;
+        if (band === 'delta' && /^(f7|f8|f3|f4|fz)$/.test(n)) v *= 1 + 0.6 * blink;
+        out[c.name] = Math.max(0.05 * this.base[band], v);
+      }
+      bands[band] = out;
+    });
+    return { t: Date.now() / 1000, units: 'uV^2', bands };
+  }
+}
+
+// ---- Wire parsing: matches bridge.py exactly ----
+//   full form (default):   {"type":"bandpower","t":..,"units":"uV^2"|"relative","bands":{"delta":{ch:v},...}}
+//   canonical w/o type:    {"t":..,"bands":{...}}
+//   single band:           {"band":"alpha","values":{ch:v}}
+//   flat (--flat-band X):  {"Fp1":0.42,...}  -> bound ONCE to one band (?flatBand=, else the band selected when the
+//                          first flat frame arrives) and never relabelled; other bands then show "No <band> data".
+// Channel names are canonicalised case-insensitively to the MONTAGE spelling ("o1", "O1 " -> "O1").
+function canonicalName(k) { const m = montageFor(String(k).trim()); return m ? m.name : String(k).trim(); }
+function cleanValues(obj) {
+  const out = {}; let n = 0;
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  for (const k of Object.keys(obj)) { const v = obj[k]; if (typeof v === 'number' && Number.isFinite(v)) { out[canonicalName(k)] = v; n++; } }
+  return n ? out : null;
+}
+function parseMessage(text, flatBand) {
+  let msg;
+  // Python's json.dumps emits NaN/Infinity by default: turn them into null so one bad channel can't drop the frame
+  try { msg = JSON.parse(text.replace(/NaN|-?Infinity/g, 'null')); } catch { return null; }
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
+  const t = Number.isFinite(msg.t) ? msg.t : Date.now() / 1000;
+  const units = typeof msg.units === 'string' ? msg.units : 'uV^2';
+  if (msg.type === 'bandpower' || (msg.bands && typeof msg.bands === 'object')) {
+    const bands = {}; let any = false;
+    for (const b of CONFIG.bands) { const v = cleanValues(msg.bands && msg.bands[b]); if (v) { bands[b] = v; any = true; } }
+    return any ? { t, units, bands } : null;
+  }
+  if (typeof msg.band === 'string' && CONFIG.bands.includes(msg.band.toLowerCase())) {
+    const v = cleanValues(msg.values);
+    return v ? { t, units, bands: { [msg.band.toLowerCase()]: v } } : null;
+  }
+  const v = cleanValues(msg);
+  if (!v) return null;
+  delete v.t;
+  return Object.keys(v).length ? { t, units, bands: { [flatBand()]: v }, flat: true } : null;
+}
+
+// ---- WebSocket: auto-reconnect with backoff, stale detection, honest failure (never falls back to mock) ----
+class WebSocketSource extends DataSource {
+  constructor({ url = CONFIG.wsDefaultUrl, flatBand = () => CONFIG.defaultBand } = {}) {
+    super();
+    this.url = url; this.flatBand = flatBand; this.boundFlatBand = CONFIG.bands.includes(PARAMS.get('flatBand')) ? PARAMS.get('flatBand') : null;
+    this.rate = 0; this.lastFrameAt = 0; this.badMessages = 0;
+  }
+  start() {
+    this._stopped = false; this._attempt = 0; this.lastFrameAt = 0;
+    this._connect();
+    this._watch = setInterval(() => this._checkStale(), 250);
+  }
+  stop() {
+    this._stopped = true;
+    clearTimeout(this._retry); clearInterval(this._watch);
+    const ws = this.ws; this.ws = null;
+    if (ws) {
+      ws.onmessage = ws.onerror = ws.onclose = null;
+      // Closing a CONNECTING socket makes Chromium log a warning; close it once it opens instead.
+      if (ws.readyState === WebSocket.CONNECTING) ws.onopen = () => ws.close(); else { ws.onopen = null; ws.close(); }
+    }
+    this._setStatus('disconnected', { reason: 'stopped', lastFrameAt: this.lastFrameAt });
+  }
+  _connect() {
+    if (this._stopped) return;
+    let ws;
+    try {
+      if (!/^wss?:\/\//i.test(this.url)) throw new Error('URL must start with ws:// or wss://');
+      ws = new WebSocket(this.url);
+    } catch (err) {
+      this._setStatus('disconnected', { reason: 'invalid URL', lastFrameAt: this.lastFrameAt });
+      return;
+    }
+    this.ws = ws;
+    this._setStatus('connecting', { url: this.url, open: false, attempt: this._attempt });
+    ws.onopen = () => this._setStatus('connecting', { url: this.url, open: true });
+    ws.onmessage = ev => {
+      if (typeof ev.data !== 'string') return;
+      const frame = parseMessage(ev.data, () => (this.boundFlatBand = this.boundFlatBand || this.flatBand()));
+      if (!frame) { if (this.badMessages++ === 0) console.info('[ws] ignored a message that is not a recognised band-power shape'); return; }
+      const now = performance.now();
+      const at = this._arrivals || (this._arrivals = []);              // measured rate = frames in the last 2 s (burst-proof)
+      at.push(now); while (at.length && now - at[0] > 2000) at.shift();
+      this.rate = at.length > 2 ? (at.length - 1) * 1000 / Math.max(1, now - at[0]) : 0;
+      this.lastFrameAt = now; this._attempt = 0;
+      if (this._state !== 'live') this._setStatus('live', { url: this.url });
+      this._emitFrame(frame);
+    };
+    ws.onerror = () => {}; // a 'close' always follows; the browser itself logs the network error
+    ws.onclose = () => this._scheduleRetry();
+  }
+  _scheduleRetry() {
+    this.ws = null; this._arrivals = [];
+    if (this._stopped) return;
+    const d = CONFIG.backoffSec[Math.min(this._attempt, CONFIG.backoffSec.length - 1)];
+    this._attempt++;
+    this._setStatus('disconnected', { retryAt: performance.now() + d * 1000, lastFrameAt: this.lastFrameAt });
+    this._retry = setTimeout(() => this._connect(), d * 1000);
+  }
+  _checkStale() {
+    const quiet = performance.now() - this.lastFrameAt;
+    if (this._state === 'live' && quiet > CONFIG.staleMs) this._setStatus('stale', { lastFrameAt: this.lastFrameAt });
+    // half-open socket (network dropped without a FIN): give up on it and reconnect
+    if (this._state === 'stale' && quiet > CONFIG.staleReconnectMs && this.ws) {
+      const ws = this.ws; ws.onmessage = ws.onerror = ws.onclose = ws.onopen = null; ws.close();
+      this._scheduleRetry();
+    }
+  }
+}
+
+/* *************************************************************************************
+ *  SWAP-TO-LIVE POINT
+ *  ---------------------------------------------------------------------------------
+ *  The page picks its data source here. Nothing in the renderer knows or cares which.
+ *    Mock (default):   index.html
+ *    Live (LSL):       python bridge.py            then open  index.html?source=ws&url=ws://localhost:8765
+ *    Live (no hw):     python bridge.py --mock     (same URL)
+ *  Aliases: ?ws=ws://host:port   ·   ?montage=19 (mock only)
+ *  To add another transport (e.g. WebSerial, HTTP polling), subclass DataSource, call
+ *  this._emitFrame({t, units, bands:{band:{channel:value}}}) and this._setStatus(state, info),
+ *  then return it from createSource(). The store, normaliser and renderer stay untouched.
+ * *************************************************************************************/
+function createSource(overrides = {}) {
+  const kind = overrides.kind || ((PARAMS.get('source') === 'ws' || PARAMS.has('ws')) ? 'ws' : 'mock');
+  if (kind === 'ws') {
+    const url = overrides.url || PARAMS.get('url') || PARAMS.get('ws') || CONFIG.wsDefaultUrl;
+    return new WebSocketSource({ url, flatBand: overrides.flatBand || (() => CONFIG.defaultBand) });
+  }
+  const n = overrides.montage || (PARAMS.get('montage') === '19' ? 19 : 10);
+  const channels = MONTAGE.filter(m => n === 19 || m.d10).map(m => m.name);
+  return new MockSource({ channels });
+}
+
+// =====================================================================================
+// ===== NORMALISATION =====
+// BandPowerStore: the ONLY thing the renderer reads. Raw values in, per-band adaptive
+// normalised values out (2nd–98th percentile over 20 s, lo/hi smoothed with tau = 4 s).
+// Unit-agnostic: works for uV^2 (0.01..800+), relative (0..1) or volts (~1e-12).
+// =====================================================================================
+class BandPowerStore {
+  constructor() { this.version = 0; this._ingestCbs = []; this.locked = false; this.reset(); }
+  reset() {
+    this.records = new Map();       // name -> record (stable object, the renderer holds references)
+    this.list = [];
+    this.units = null;
+    this.frames = 0;
+    this.lastIngest = 0;
+    this.ranges = CONFIG.bands.map(() => ({ lo: 0, hi: 1, tlo: 0, thi: 1, init: false, clip: NaN, fmax: -Infinity }));
+    this._win = CONFIG.bands.map(() => []);
+    this._lastRangeAt = 0;
+    this.version++;
+  }
+  onIngest(cb) { this._ingestCbs.push(cb); }
+  lockRange(on) { this.locked = !!on; }
+  channels() { return this.list; }
+  record(name) { return this.records.get(name) || null; }
+  hasBand(b) { const bi = CONFIG.bands.indexOf(b); for (const r of this.list) if (r.has[bi] && !r.stale) return true; return false; }
+  bandsPresent() { return CONFIG.bands.filter(b => this.hasBand(b)); }
+  raw(band, ch) { const r = this.records.get(ch), bi = CONFIG.bands.indexOf(band); return r && r.has[bi] ? r.raw[bi] : NaN; }
+  norm(band, ch) { const r = this.records.get(ch), bi = CONFIG.bands.indexOf(band); return r && r.has[bi] ? r.norm[bi] : 0; }
+  range(band) { const r = this.ranges[CONFIG.bands.indexOf(band)]; return { lo: r.lo, hi: r.hi, clip: r.clip }; }
+  history(band, ch) { // ordered oldest -> newest, raw values
+    const r = this.records.get(ch), bi = CONFIG.bands.indexOf(band);
+    if (!r) return [];
+    const h = r.hist[bi], out = [];
+    for (let i = 0; i < h.count; i++) out.push(h.buf[(h.head - h.count + i + h.buf.length) % h.buf.length]);
+    return out;
+  }
+  _newRecord(name) {
+    return { name, raw: new Float64Array(5), norm: new Float32Array(5), has: new Uint8Array(5), seen: 0, stale: false,
+      hist: CONFIG.bands.map(() => ({ buf: new Float32Array(CONFIG.historyLen), head: 0, count: 0 })) };
+  }
+  ingest(frame) {
+    if (!frame || !frame.bands) return;
+    const now = performance.now();
+    const dt = this.lastIngest ? Math.min(2, (now - this.lastIngest) / 1000) : 0;
+    this.lastIngest = now;
+    if (frame.units && frame.units !== this.units) {          // unit change -> ranges are meaningless, restart them
+      if (this.units !== null) { this.ranges.forEach(r => (r.init = false)); this._win.forEach(w => (w.length = 0)); }
+      this.units = frame.units;
+    }
+    let added = false;
+    CONFIG.bands.forEach((band, bi) => {
+      const vals = frame.bands[band];
+      if (!vals) return;
+      const snap = [];
+      for (const name of Object.keys(vals)) {
+        let r = this.records.get(name);
+        if (!r) { r = this._newRecord(name); this.records.set(name, r); this.list.push(r); added = true; }
+        const v = vals[name];
+        r.raw[bi] = v; r.has[bi] = 1; r.seen = now; snap.push(v);
+        const h = r.hist[bi]; h.buf[h.head] = v; h.head = (h.head + 1) % h.buf.length; h.count = Math.min(h.count + 1, h.buf.length);
+      }
+      const w = this._win[bi], R = this.ranges[bi];
+      // outlier/scale jump (e.g. volts after a burst of 1e9): if this frame's median is >1e3x off the range, restart the window
+      const med = snap.slice().sort((a, b) => a - b)[snap.length >> 1], mid = Math.max(Math.abs(R.hi), Math.abs(R.lo), 1e-30);
+      if (R.init && !this.locked && w.length > 5 && Number.isFinite(med) && Math.abs(med) > 0 && (Math.abs(med) / mid > 1e3 || Math.abs(med) / mid < 1e-3)) { w.length = 0; R.init = false; }
+      w.push(snap); if (w.length > CONFIG.rangeWindow) w.shift();
+      let fmax = -Infinity; for (const v of snap) if (v > fmax) fmax = v; R.fmax = fmax;
+    });
+    // per-channel staleness: a channel absent from messages for > staleChannelMs is marked stale (greyed,
+    // excluded from the heatmap fit and the colour range) while the stream itself can stay Live.
+    for (const r of this.list) { const st = now - r.seen > CONFIG.staleChannelMs; if (st !== r.stale) { r.stale = st; added = true; } }
+    if (added) this.version++;
+    this.frames++;
+    // adaptive range: percentiles every 500 ms, smoothed with tau = 4 s
+    const recompute = now - this._lastRangeAt >= CONFIG.rangeEveryMs || this.frames < 3;
+    if (recompute) this._lastRangeAt = now;
+    CONFIG.bands.forEach((band, bi) => {
+      const R = this.ranges[bi], w = this._win[bi];
+      if (!w.length) return;
+      if (recompute && !this.locked) {
+        let n = 0; for (const s of w) n += s.length;
+        const all = new Float64Array(n); let i = 0;
+        for (const s of w) for (const v of s) all[i++] = v;
+        all.sort();
+        const pct = p => { const x = p * (n - 1), a = Math.floor(x), b = Math.min(n - 1, a + 1); return all[a] + (all[b] - all[a]) * (x - a); };
+        R.tlo = pct(CONFIG.rangePct[0]); R.thi = pct(CONFIG.rangePct[1]);
+        if (!R.init) { R.lo = R.tlo; R.hi = R.thi; R.init = true; }
+      }
+      if (!this.locked && R.init && dt > 0) {
+        const k = 1 - Math.exp(-dt / CONFIG.rangeTau);
+        // young window: converge faster so the first seconds aren't saturated
+        const kk = this.frames < 50 ? Math.max(k, 0.25) : k;
+        R.lo += (R.tlo - R.lo) * kk;
+        // burst headroom: attack fast (tau 0.6 s) toward the live max when it exceeds hi, release with tau 4 s
+        if (R.fmax > R.hi) R.hi += (R.fmax - R.hi) * Math.max(kk, 1 - Math.exp(-dt / CONFIG.rangeAttackTau));
+        else R.hi += (R.thi - R.hi) * kk;
+      }
+      const span = Math.max(R.hi - R.lo, Math.abs(R.hi) * 1e-6, 1e-30);  // relative guard (volts ~1e-12 must still work)
+      let clip = NaN;
+      for (const r of this.list) if (r.has[bi]) {
+        r.norm[bi] = Math.min(1, Math.max(0, (r.raw[bi] - R.lo) / span));
+        if (!r.stale && r.raw[bi] > R.hi + span * 0.01 && !(r.raw[bi] <= clip)) clip = r.raw[bi];
+      }
+      R.clip = clip;                                                  // clipping is never silent: the legend shows it
+    });
+    for (const cb of this._ingestCbs) cb(this);
+  }
+}
+
+// =====================================================================================
+// ===== RENDERING =====
+// Reads ONLY the BandPowerStore (normalised values) + the source status (for honest failure visuals).
+// Coordinate convention: +Y superior (vertex), +Z anterior (nose), -X subject's left. Unit = cranial radius.
+// =====================================================================================
+const sstep = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+const mix = (a, b, t) => a + (b - a) * t;
+const easeIO = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+function angBump(dx, dy, dz, cx, cy, cz, sigma) { // gaussian in angular distance between unit dirs
+  const n = Math.hypot(cx, cy, cz), d = Math.max(-1, Math.min(1, (dx * cx + dy * cy + dz * cz) / n));
+  const a = Math.acos(d); return Math.exp(-(a * a) / (2 * sigma * sigma));
+}
+
+// shapeHead: unit direction -> point on the stylised head. Shared by skull, scalp shell and electrodes.
+// Cranium follows the spec; the face is placed anatomically relative to the 10-20 equator (Fp1/Fp2 at theta 92 deg):
+// brow ~theta 102, nasion ~theta 110, nose tip ~theta 125, and the chin drops BELOW the cranial sphere (long face).
+function shapeHead(dx, dy, dz, out) {
+  let x = dx * 0.86, y = dy * 0.98, z = dz * 1.06;                                   // 1 cranial ellipsoid
+  if (dz < 0) z *= 1 + 0.06 * sstep(0.0, -0.8, dz) * sstep(-0.6, 0.2, dy);           // 2 occipital bulge
+  const low = sstep(0.0, -0.75, dy), front = sstep(-0.15, 0.6, dz);                  // 3 face plane & jaw
+  x *= 1 + low * (0.10 * front - 0.22 * (1 - front));                                //   jaw stays wide, back of skull tucks in
+  if (dz > 0) z = mix(z, 1.0 + 0.08 * dz, 0.5 * low * sstep(0.2, 0.9, dz));
+  if (dy < -0.55) y = mix(y, -0.62, 0.5 * sstep(-0.55, -0.9, dy));
+  y *= 1 + 0.45 * sstep(-0.15, -0.8, dy) * front;                                    //   long face: chin drops
+  let off = 0;
+  off += 0.06 * angBump(dx, dy, dz, 0, -0.80, 0.60, 0.20);                            //   chin
+  if (dz > 0.4) off += 0.04 * Math.exp(-(((dy + 0.30) / 0.06) ** 2)) * sstep(0.5, 0.78, dz);    // 4 brow ridge
+  off -= 0.07 * angBump(dx, dy, dz, 0.33, -0.42, 0.84, 0.14);                        // 5 eye sockets
+  off -= 0.07 * angBump(dx, dy, dz, -0.33, -0.42, 0.84, 0.14);
+  if (dz > 0) {
+    const ax = Math.atan2(dx, dz), el = Math.asin(Math.max(-1, Math.min(1, dy)));
+    const en = el + 0.64, elw = en > 0 ? 0.22 : 0.07, axw = 0.085 + 0.035 * sstep(0, -0.1, en);       // 6 nose: bridge from nasion, flared tip
+    off += 0.30 * Math.exp(-(ax * ax) / (2 * axw * axw) - (en * en) / (2 * elw * elw));
+    const em = el + 0.86; off -= 0.025 * Math.exp(-(ax * ax) / (2 * 0.16 * 0.16) - (em * em) / (2 * 0.03 * 0.03));   //   mouth line
+  }
+  off += 0.04 * angBump(dx, dy, dz, 0.55, -0.50, 0.67, 0.15);                         // 7 cheekbones
+  off += 0.04 * angBump(dx, dy, dz, -0.55, -0.50, 0.67, 0.15);
+  out.set(x + dx * off, y + dy * off, z + dz * off);
+  return out;
+}
+function surfaceNormal(d, out) { // finite-difference normal of shapeHead at direction d (THREE.Vector3, unit)
+  const t1 = new THREE.Vector3(), t2 = new THREE.Vector3(), p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
+  t1.set(0, 1, 0).cross(d); if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0).cross(d); t1.normalize(); t2.crossVectors(d, t1).normalize();
+  const e = 0.01, q = new THREE.Vector3();
+  shapeHead(d.x, d.y, d.z, p0);
+  q.copy(d).addScaledVector(t1, e).normalize(); shapeHead(q.x, q.y, q.z, p1);
+  q.copy(d).addScaledVector(t2, e).normalize(); shapeHead(q.x, q.y, q.z, p2);
+  out.crossVectors(p1.sub(p0), p2.sub(p0)).normalize();
+  if (out.dot(d) < 0) out.negate();
+  return out;
+}
+
+// ---- renderer, scene, camera ----
+const glHost = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+let dprCap = IS_PHONE() ? CONFIG.dprCapPhone : CONFIG.dprCap;
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, dprCap));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.NoToneMapping;             // LUT colours must be exact
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+glHost.appendChild(renderer.domElement);
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+labelRenderer.domElement.className = 'labels';
+glHost.appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0b0d10, 6, 11);
+scene.background = (() => { // vignette gradient as a screen-space background (bloom-safe, unlike an alpha canvas)
+  const c = document.createElement('canvas'); c.width = c.height = 512; const g = c.getContext('2d');
+  const gr = g.createRadialGradient(256, 215, 0, 256, 215, 360);
+  gr.addColorStop(0, '#10141a'); gr.addColorStop(0.45, '#0b0d10'); gr.addColorStop(1, '#07080a');
+  g.fillStyle = gr; g.fillRect(0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+
+const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.05, 50);
+const TARGET = new THREE.Vector3(0, -0.22, 0.05);
+const VIEWS = {
+  home: { polar: 64, az: 84 }, top: { polar: 7, az: 0 }, front: { polar: 88, az: 0 },
+  left: { polar: 80, az: 90 }, right: { polar: 80, az: -90 }, back: { polar: 80, az: 180 },
+};
+function freeArea() { // screen region not covered by the phone bottom sheet + legend (desktop: whole canvas)
+  if (!IS_PHONE()) return { top: 0, bottom: innerHeight };
+  const lg = document.getElementById('legend');
+  return { top: 52, bottom: innerHeight - sheetHeight() - (lg ? lg.offsetHeight + 8 : 0) };
+}
+function homeRadius() { // fit the bust (~2.5 units tall, ~2.4 deep incl. nose) inside the free area
+  const t = Math.tan(17 * D2R), f = freeArea(), hFree = Math.max(160, f.bottom - f.top);
+  const rV = 2.5 * innerHeight / (0.85 * hFree * 2 * t), rH = 2.4 * innerHeight / (0.92 * innerWidth * 2 * t);
+  return Math.min(14, Math.max(5.4, rV, rH));
+}
+const controls = new OrbitControls(camera, renderer.domElement);
+Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: false, minDistance: 2.6, maxDistance: 8,
+  minPolarAngle: 0.12, maxPolarAngle: 1.95, rotateSpeed: 0.7, zoomSpeed: 0.8, autoRotate: !REDUCED_MOTION, autoRotateSpeed: 0 });
+controls.target.copy(TARGET);
+{
+  const s = new THREE.Spherical(REDUCED_MOTION ? homeRadius() : homeRadius() * 1.35, VIEWS.home.polar * D2R, VIEWS.home.az * D2R);
+  camera.position.setFromSpherical(s).add(TARGET); camera.lookAt(TARGET);
+}
+
+// ---- lights ----
+// Key sits on the camera side (home view is front-left) so the face is modelled; spec had it at (2.5, 3, 2.2).
+// Spec intensities assume legacy light units; three r155+ is physically based (Lambert includes 1/PI), so scale by PI.
+const LU = Math.PI;
+const hemi = new THREE.HemisphereLight(0x1b2230, 0x000000, 0.6 * LU); scene.add(hemi);
+const key = new THREE.DirectionalLight(0xdfe6ee, 1.4 * LU); key.position.set(1.6, 3.0, 2.8); scene.add(key);
+const fill = new THREE.DirectionalLight(0x8fa3b8, 0.3 * LU); fill.position.set(-3, 0.6, 1.5); scene.add(fill);
+const rim = new THREE.DirectionalLight(0xb9c6d6, 2.2 * LU); rim.position.set(0.5, 2.0, -4); scene.add(rim);
+
+// ---- head (faceted skull + fresnel rim + facet wire), ears, neck ----
+function headMaterial(extra = {}) {
+  const m = new THREE.MeshStandardMaterial({ color: PARAMS.has('clay') ? 0x9aa0a8 : 0x15181d, roughness: 0.62, metalness: 0.0, flatShading: false, ...extra });
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uRim = { value: new THREE.Color(0x8fa3b8) };
+    sh.vertexShader = 'varying vec3 vObj;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vObj = (modelMatrix * vec4(transformed,1.0)).xyz;');
+    sh.fragmentShader = 'uniform vec3 uRim;\nvarying vec3 vObj;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+       float fr = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.4);
+       totalEmissiveRadiance += uRim * fr * 0.55;
+       float cy = vObj.y / 0.05; float cw = fwidth(cy); float cf = abs(fract(cy - 0.5) - 0.5);
+       float cl = 1.0 - smoothstep(0.0, cw * 1.25, cf);
+       float below = smoothstep(0.45, 0.05, vObj.y) * (1.0 - smoothstep(-1.2, -1.75, vObj.y));
+       totalEmissiveRadiance += uRim * cl * below * (0.07 + 0.33 * fr);`);
+  };
+  return m;
+}
+const headGroup = new THREE.Group(); scene.add(headGroup);
+const headGeo = (() => {
+  let g = new THREE.IcosahedronGeometry(1, CONFIG.headDetail);
+  g.deleteAttribute('normal'); g.deleteAttribute('uv'); g = mergeVertices(g);
+  const p = g.attributes.position, v = new THREE.Vector3(), o = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).normalize(); shapeHead(v.x, v.y, v.z, o); p.setXYZ(i, o.x, o.y, o.z); }
+  g.computeVertexNormals(); return g;
+})();
+const headMesh = new THREE.Mesh(headGeo, headMaterial());
+headGroup.add(headMesh);
+// Facet wire from a COARSER tessellation of the same shapeHead(): a clean engineering lattice instead of a moire net.
+const wireGeo = (() => {
+  let g = new THREE.IcosahedronGeometry(1, 9); g.deleteAttribute('normal'); g.deleteAttribute('uv'); g = mergeVertices(g);
+  const p = g.attributes.position, v = new THREE.Vector3(), o = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).normalize(); shapeHead(v.x, v.y, v.z, o); o.addScaledVector(v, 0.006); p.setXYZ(i, o.x, o.y, o.z); }
+  return new THREE.EdgesGeometry(g, 1);
+})();
+const wire = new THREE.LineSegments(wireGeo, new THREE.LineBasicMaterial({ color: 0x3a4250, transparent: true, opacity: 0.22, depthWrite: false }));
+// wire removed
+for (const s of [-1, 1]) {
+  const ear = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), headMaterial());
+  ear.scale.set(0.045, 0.165, 0.095); ear.position.set(0.83 * s, -0.40, -0.08);   // brow-to-nose-tip height, below T7/T8 ear.rotation.set(0, 0.18 * s, -0.08 * s);
+  headGroup.add(ear);
+}
+{
+  const a = new Uint8Array(64 * 4);
+  for (let i = 0; i < 64; i++) { const v = Math.round(255 * Math.pow(sstep(0.2, 0.95, i / 63), 2.0)); a.set([v, v, v, 255], i * 4); }
+  const alphaTex = new THREE.DataTexture(a, 1, 64); alphaTex.needsUpdate = true; alphaTex.magFilter = alphaTex.minFilter = THREE.LinearFilter;
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.46, 1.2, 64, 1, true), headMaterial({ transparent: true, alphaMap: alphaTex, depthWrite: false }));
+  neck.position.set(0, -1.15, -0.2); neck.rotation.x = -0.12; headGroup.add(neck);
+}
+
+// ---- stage: polar grid + contact shadow ----
+{
+  const pos = [], col = [], Y = -1.75;
+  const push = (x, z, a) => { pos.push(x, Y, z); col.push(1, 1, 1, a); };
+  for (const r of [0.6, 1.0, 1.4, 1.8, 2.2]) {
+    const a = 0.010 * (1 - r / 2.6) / (1 - 0.6 / 2.6);   // spec 0.045 in sRGB-blend terms; we blend in linear space
+    for (let i = 0; i < 128; i++) { const t0 = i / 128 * Math.PI * 2, t1 = (i + 1) / 128 * Math.PI * 2; push(r * Math.cos(t0), r * Math.sin(t0), a); push(r * Math.cos(t1), r * Math.sin(t1), a); }
+  }
+  for (let i = 0; i < 12; i++) { const t = i / 12 * Math.PI * 2; push(0.3 * Math.cos(t), 0.3 * Math.sin(t), 0.007); push(2.2 * Math.cos(t), 2.2 * Math.sin(t), 0.0); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
+  scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false })));
+  const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+  const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64); gr.addColorStop(0, 'rgba(0,0,0,0.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+  const sh = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 2.0), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false }));
+  sh.rotation.x = -Math.PI / 2; sh.position.set(0, Y + 0.001, -0.1); scene.add(sh);
+}
+
+// ---- L / R orientation markers ----
+const axisLabels = [];
+for (const [txt, x] of [['L', 1.22], ['R', -1.22]]) {
+  const el = document.createElement('div'); el.className = 'axislabel'; el.textContent = txt;
+  const o = new CSS2DObject(el); o.position.set(x, -0.05, 0); scene.add(o); axisLabels.push({ o, el, x });
+}
+
+// ---- colormap LUT texture (from the same lut()) ----
+const lutTex = (() => {
+  const d = new Uint8Array(256 * 4), c = [0, 0, 0];
+  for (let i = 0; i < 256; i++) { lut(i / 255, c); d.set([Math.round(c[0] * 255), Math.round(c[1] * 255), Math.round(c[2] * 255), 255], i * 4); }
+  const t = new THREE.DataTexture(d, 256, 1); t.colorSpace = THREE.SRGBColorSpace; t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.needsUpdate = true; return t;
+})();
+
+// ---- scalp shell (smooth skin carrying the heatmap) ----
+const shellUniforms = { uLUT: { value: lutTex }, uSat: { value: 1 }, uSweep: { value: 0 }, uOpacity: { value: 0 } };
+const shellMat = new THREE.ShaderMaterial({
+  uniforms: shellUniforms, transparent: true, depthWrite: false, toneMapped: false,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+  vertexShader: /* glsl */`
+    attribute vec3 aDir; attribute float aVal; attribute float aMask;
+    varying float vVal; varying float vMask; varying float vDirZ; varying vec3 vN; varying vec3 vV;
+    void main() {
+      vVal = aVal; vMask = aMask; vDirZ = aDir.z;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vV = -mv.xyz; vN = normalMatrix * normal;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D uLUT; uniform float uSat; uniform float uSweep; uniform float uOpacity;
+    varying float vVal; varying float vMask; varying float vDirZ; varying vec3 vN; varying vec3 vV;
+    void main() {
+      float a = vMask * uOpacity;
+      if (a < 0.003) discard;
+      float t = clamp(vVal, 0.0, 1.0);
+      vec3 col = texture2D(uLUT, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+      float ndv = clamp(dot(normalize(vN), normalize(vV)), 0.0, 1.0);
+      col *= mix(1.0, 0.80, pow(1.0 - ndv, 2.0));                                  // grazing-angle readability
+      float s = t * 10.0, w = max(fwidth(s), 1e-4), f = fract(s);                 // isolines every 0.1
+      float line = (1.0 - smoothstep(0.0, w * 1.2, min(f, 1.0 - f))) * step(0.002, t) * step(t, 0.998);
+      col = mix(col, col * 0.72, line * 0.55);
+      if (uSweep > 0.0 && uSweep < 1.0) {                                          // band-switch scanner pass
+        float b = exp(-pow((vDirZ - mix(1.1, -1.1, uSweep)) / 0.09, 2.0));
+        col *= 1.0 + 0.12 * b;
+      }
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, uSat);                                                // signal health
+      gl_FragColor = vec4(col, a);
+    }`,
+});
+const shell = (() => {
+  let g = new THREE.IcosahedronGeometry(1, CONFIG.shellDetail);
+  g.deleteAttribute('normal'); g.deleteAttribute('uv'); g = mergeVertices(g);
+  const P = g.attributes.position, I = g.index.array, n = P.count;
+  const dir = new Float32Array(n * 3), smask = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let x = P.getX(i), y = P.getY(i), z = P.getZ(i); const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
+    dir.set([x, y, z], i * 3);
+    const th = Math.acos(Math.max(-1, Math.min(1, y))) / D2R;
+    const edge = 1 - sstep(100, 115, th);
+    const front = 1 - sstep(0.78, 0.90, z) * sstep(-0.08, -0.20, y);   // stop above the brow ridge
+    smask[i] = y >= -0.5 ? edge * front : 0;
+  }
+  const remap = new Int32Array(n).fill(-1), idx = [], keep = [];
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t], b = I[t + 1], c = I[t + 2];
+    if (dir[a * 3 + 1] < -0.5 || dir[b * 3 + 1] < -0.5 || dir[c * 3 + 1] < -0.5) continue;
+    if (Math.max(smask[a], smask[b], smask[c]) <= 0.001) continue;
+    for (const v of [a, b, c]) { if (remap[v] < 0) { remap[v] = keep.length; keep.push(v); } idx.push(remap[v]); }
+  }
+  const m = keep.length, pos = new Float32Array(m * 3), aDir = new Float32Array(m * 3), o = new THREE.Vector3();
+  const staticMask = new Float32Array(m);
+  keep.forEach((v, i) => {
+    const x = dir[v * 3], y = dir[v * 3 + 1], z = dir[v * 3 + 2];
+    shapeHead(x, y, z, o); o.x += x * 0.008; o.y += y * 0.008; o.z += z * 0.008;   // +0.008 along the radial direction
+    pos.set([o.x, o.y, o.z], i * 3); aDir.set([x, y, z], i * 3); staticMask[i] = smask[v];
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aDir', new THREE.BufferAttribute(aDir, 3));
+  geo.setAttribute('aVal', new THREE.BufferAttribute(new Float32Array(m), 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aMask', new THREE.BufferAttribute(new Float32Array(m), 1));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, shellMat); mesh.renderOrder = 2; headGroup.add(mesh);
+  return { mesh, geo, n: m, aDir, staticMask, W: new Float32Array(0), N: 0 };
+})();
+
+// ---- Perrin spherical spline (m = 4), precomputed weight matrix: per frame = one mat-vec ----
+function splineG(x) {
+  let p0 = 1, p1 = x, sum = 0;
+  for (let n = 1; n <= 40; n++) {
+    const pn = n === 1 ? x : ((2 * n - 1) * x * p1 - (n - 1) * p0) / n;
+    if (n > 1) { p0 = p1; p1 = pn; }
+    sum += (2 * n + 1) / Math.pow(n * (n + 1), 4) * pn;
+  }
+  return sum / (4 * Math.PI);
+}
+function invert(A) { // Gauss-Jordan with partial pivoting, A is array of rows (copied)
+  const n = A.length, M = A.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const d = M[c][c] || 1e-12; for (let j = 0; j < 2 * n; j++) M[c][j] /= d;
+    for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c]; if (f) for (let j = 0; j < 2 * n; j++) M[r][j] -= f * M[c][j]; }
+  }
+  return M.map(r => r.slice(n));
+}
+function project2D(x, y, z) { const th = Math.acos(Math.max(-1, Math.min(1, y))), h = Math.hypot(x, z) || 1; return [th * x / h, th * z / h]; }
+function convexHull(pts) { // monotone chain, CCW
+  const P = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]), cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const p of P) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+function hullOutside(h, p) { // max signed distance to the hull's edge lines (> 0 outside)
+  let m = -Infinity;
+  for (let i = 0; i < h.length; i++) {
+    const a = h[i], b = h[(i + 1) % h.length], ex = b[0] - a[0], ey = b[1] - a[1], L = Math.hypot(ex, ey) || 1;
+    m = Math.max(m, ((p[0] - a[0]) * ey - (p[1] - a[1]) * ex) / L);
+  }
+  return m;
+}
+function buildSpline(dirs) { // dirs: array of [x,y,z] unit vectors of PRESENT electrodes
+  const N = dirs.length, nv = shell.n, D = shell.aDir, mask = shell.geo.attributes.aMask.array;
+  shell.N = N; shell.W = new Float32Array(nv * N);
+  if (!N) { mask.fill(0); shell.geo.attributes.aMask.needsUpdate = true; return; }
+  const dot = (a, i) => a[0] * D[i * 3] + a[1] * D[i * 3 + 1] + a[2] * D[i * 3 + 2];
+  const A = [];
+  for (let i = 0; i <= N; i++) {
+    A.push([]);
+    for (let j = 0; j <= N; j++) {
+      if (i === N && j === N) A[i].push(0);
+      else if (i === N || j === N) A[i].push(1);
+      else A[i].push(splineG(dirs[i][0] * dirs[j][0] + dirs[i][1] * dirs[j][1] + dirs[i][2] * dirs[j][2]) + (i === j ? 1e-5 : 0));
+    }
+  }
+  const Ai = invert(A), G = new Float64Array(N);
+  const hull = N >= 3 ? convexHull(dirs.map(d => project2D(d[0], d[1], d[2]))) : null;
+  for (let v = 0; v < nv; v++) {
+    let dmin = 9;
+    for (let j = 0; j < N; j++) { const c = Math.max(-1, Math.min(1, dot(dirs[j], v))); G[j] = splineG(c); dmin = Math.min(dmin, Math.acos(c)); }
+    for (let k = 0; k < N; k++) { let s = Ai[N][k]; for (let j = 0; j < N; j++) s += G[j] * Ai[j][k]; shell.W[v * N + k] = s; }
+    // Coverage mask (honest gaps): fade where the spline EXTRAPOLATES, i.e. outside the electrodes' convex hull in the
+    // topoplot projection, plus a guard far from any electrode. Interpolated regions (e.g. Cz, surrounded by C3/C4/F3/F4/P3/P4)
+    // stay opaque; uncovered temporal regions fade. (Spec used nearest-distance only, which blanked the vertex.)
+    let cover = 1 - sstep(0.75, 1.05, dmin);
+    if (hull) { const p = project2D(D[v * 3], D[v * 3 + 1], D[v * 3 + 2]); cover *= 1 - sstep(-0.05, 0.42, hullOutside(hull, p)); }
+    mask[v] = 0.92 * shell.staticMask[v] * cover;
+  }
+  shell.geo.attributes.aMask.needsUpdate = true;
+}
+
+// ---- electrodes: machined cup + glowing HDR core + additive halo + hit target + CSS2D label ----
+const haloTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,0.45)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const cupGeo = new THREE.CylinderGeometry(0.045, 0.050, 0.020, 24), ringGeo = new THREE.TorusGeometry(0.047, 0.0045, 8, 32);
+const coreGeo = new THREE.SphereGeometry(0.028, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), hitGeo = new THREE.SphereGeometry(0.085, 8, 6);
+const cupMat = new THREE.MeshStandardMaterial({ color: 0x2b2f35, metalness: 0.6, roughness: 0.35 });
+const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+const ELECTRODES = MONTAGE.map(m => {
+  const d = new THREE.Vector3(...m.dir).normalize(), pos = shapeHead(d.x, d.y, d.z, new THREE.Vector3()), nrm = surfaceNormal(d, new THREE.Vector3());
+  pos.addScaledVector(nrm, 0.012);
+  const g = new THREE.Group(); g.position.copy(pos); g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nrm);
+  const cup = new THREE.Mesh(cupGeo, cupMat); cup.position.y = 0.0; g.add(cup);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x5a6270 });
+  const ring = new THREE.Mesh(ringGeo, ringMat); ring.rotation.x = Math.PI / 2; ring.position.y = 0.010; g.add(ring);
+  const coreMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+  const core = new THREE.Mesh(coreGeo, coreMat); core.position.y = 0.006; g.add(core);
+  const hit = new THREE.Mesh(hitGeo, hitMat); hit.userData.name = m.name; g.add(hit);
+  const haloMat = new THREE.SpriteMaterial({ map: haloTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const halo = new THREE.Sprite(haloMat); halo.position.copy(pos).addScaledVector(nrm, 0.03); halo.renderOrder = 3;
+  const el = document.createElement('div'); el.className = 'elabel'; el.textContent = m.name;
+  const wrap = document.createElement('div'); wrap.className = 'elabel-wrap'; wrap.appendChild(el);
+  const label = new CSS2DObject(wrap); label.position.copy(pos).addScaledVector(nrm, 0.085); label.center.set(0.5, 1);
+  headGroup.add(g); scene.add(halo); scene.add(label);
+  g.visible = halo.visible = label.visible = false;
+  return { m, name: m.name, group: g, core, coreMat, ring, ringMat, hit, halo, haloMat, label, el, pos, nrm, labelPos: label.position,
+    rec: null, v: 0, vis: -1, on: 0, phase: Math.random() * Math.PI * 2, order: 0, idx: -1 };
+});
+const EL_BY_NAME = new Map(ELECTRODES.map(e => [e.name, e]));
+
+// ---- post-processing: bloom on HDR electrode cores only (heatmap max luminance < threshold) ----
+const rt = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
+composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth / 2, innerHeight / 2), CONFIG.bloom.strength, CONFIG.bloom.radius, CONFIG.bloom.threshold);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// ---- display state (smoothed normalised values, band crossfade) ----
+const store = new BandPowerStore();
+const VIEW = {
+  band: CONFIG.defaultBand, bi: CONFIG.bands.indexOf(CONFIG.defaultBand),
+  active: [], staleEls: [], storeVersion: -1, montageKey: '',
+  disp: CONFIG.bands.map(() => new Float32Array(0)), shown: new Float32Array(0), from: new Float32Array(0),
+  mixT: 1, mixStart: 0, sweepStart: -1,
+  sat: 1, ok: true, hasData: false, dataFade: 0,
+  introStart: performance.now(), status: 'idle', statusInfo: {},
+  hover: null, hoverFrom: null, pinned: null,
+};
+function syncMontage() {
+  // active electrodes = incoming channels ∩ MONTAGE (placeholder: the default 10 dimmed, before any data)
+  // stale channels (absent > 2 s) are NOT active: they leave the spline fit, keep a dim cup + greyed table cell.
+  const known = [], unknown = [], staleKnown = [];
+  for (const r of store.channels()) { const m = montageFor(r.name); if (!m) unknown.push(r.name); else if (r.stale) staleKnown.push(m.name); else known.push(m.name); }
+  const placeholder = known.length === 0 && staleKnown.length === 0;
+  const activeNames = placeholder ? MONTAGE.filter(m => m.d10).map(m => m.name) : MONTAGE.filter(m => known.includes(m.name)).map(m => m.name);
+  const staleNames = MONTAGE.filter(m => staleKnown.includes(m.name)).map(m => m.name);
+  for (const u of unknown) if (!syncMontage.warned.has(u)) { syncMontage.warned.add(u); console.info(`[montage] channel "${u}" has no 10-20 position; shown in the table footer only`); }
+  const key = activeNames.join(',') + '|' + staleNames.join(',') + (placeholder ? '|ph' : '');
+  VIEW.storeVersion = store.version;
+  const recByLower = new Map(store.channels().map(r => [r.name.toLowerCase(), r]));
+  if (key === VIEW.montageKey) { for (const e of VIEW.active.concat(VIEW.staleEls)) e.rec = recByLower.get(e.name.toLowerCase()) || null; ui.setUnplaced(unknown); return; }
+  const old = new Map(VIEW.active.map((e, i) => [e.name, i])), oldDisp = VIEW.disp, oldShown = VIEW.shown;
+  for (const e of ELECTRODES) { e.group.visible = e.halo.visible = e.label.visible = false; e.idx = -1; e.vis = -1; }
+  VIEW.active = activeNames.map((n, i) => { const e = EL_BY_NAME.get(n); e.idx = i; e.stale = false; e.rec = recByLower.get(n.toLowerCase()) || null; e.group.visible = e.halo.visible = e.label.visible = true; e.el.classList.remove('stale'); return e; });
+  VIEW.staleEls = staleNames.map(n => {
+    const e = EL_BY_NAME.get(n); e.stale = true; e.rec = recByLower.get(n.toLowerCase()) || null;
+    e.group.visible = e.label.visible = true; e.halo.visible = false; e.el.classList.add('stale');
+    e.coreMat.color.setRGB(0.03, 0.03, 0.035); e.core.scale.setScalar(0.8); return e;
+  });
+  const N = VIEW.active.length;
+  VIEW.disp = CONFIG.bands.map((_, b) => { const a = new Float32Array(N); VIEW.active.forEach((e, i) => { if (old.has(e.name)) a[i] = oldDisp[b][old.get(e.name)]; }); return a; });
+  VIEW.shown = new Float32Array(N); VIEW.from = new Float32Array(N);
+  VIEW.active.forEach((e, i) => { if (old.has(e.name)) VIEW.shown[i] = VIEW.from[i] = oldShown[old.get(e.name)]; });
+  [...VIEW.active].sort((a, b) => b.m.dir[2] - a.m.dir[2]).forEach((e, i) => (e.order = i));   // intro stagger front -> back
+  VIEW.montageKey = key;
+  buildSpline(VIEW.active.map(e => e.m.dir));
+  ui.rebuildTable(VIEW.active, unknown, placeholder, VIEW.staleEls);
+}
+syncMontage.warned = new Set();
+
+function setBand(band) {
+  const bi = CONFIG.bands.indexOf(band);
+  if (bi < 0 || bi === VIEW.bi) return;
+  VIEW.from.set(VIEW.shown);                          // start from the CURRENT mixed values: no snapping on re-switch
+  VIEW.band = band; VIEW.bi = bi; VIEW.mixT = 0; VIEW.mixStart = performance.now();
+  if (!REDUCED_MOTION) VIEW.sweepStart = performance.now();
+  ui.onBand(band);
+}
+
+// ---- per-frame update (zero allocations) ----
+const _c = [0, 0, 0], _col = new THREE.Color(), _v = new THREE.Vector3(), _w = new THREE.Vector3(), _sph = new THREE.Spherical();
+let lastT = performance.now();
+function updateDisplay(dt, now) {
+  if (store.version !== VIEW.storeVersion) syncMontage();
+  const N = VIEW.active.length, k = 1 - Math.exp(-dt / CONFIG.smoothTau);
+  for (let b = 0; b < 5; b++) {
+    const d = VIEW.disp[b];
+    for (let i = 0; i < N; i++) { const r = VIEW.active[i].rec, tgt = r && r.has[b] ? r.norm[b] : 0; d[i] += (tgt - d[i]) * k; }
+  }
+  if (VIEW.mixT < 1) VIEW.mixT = Math.min(1, (now - VIEW.mixStart) / CONFIG.bandMixMs);
+  const e = easeIO(VIEW.mixT), cur = VIEW.disp[VIEW.bi];
+  for (let i = 0; i < N; i++) VIEW.shown[i] = VIEW.mixT >= 1 ? cur[i] : VIEW.from[i] + (cur[i] - VIEW.from[i]) * e;
+  // signal health
+  VIEW.hasData = store.hasBand(VIEW.band);
+  VIEW.ok = VIEW.status === 'mock' || VIEW.status === 'live';
+  VIEW.sat += ((VIEW.ok ? 1 : 0.35) - VIEW.sat) * (1 - Math.exp(-dt / 0.2));
+  VIEW.dataFade += ((VIEW.hasData ? 1 : 0) - VIEW.dataFade) * (1 - Math.exp(-dt / 0.25));
+}
+function updateShell(now) {
+  const N = shell.N, W = shell.W, val = shell.geo.attributes.aVal.array, s = VIEW.shown;
+  if (N && N === VIEW.active.length) {
+    for (let v = 0, o = 0; v < shell.n; v++, o += N) { let acc = 0; for (let k = 0; k < N; k++) acc += W[o + k] * s[k]; val[v] = acc; }
+    shell.geo.attributes.aVal.needsUpdate = true;
+  }
+  const intro = REDUCED_MOTION ? 1 : sstep(400, 1200, now - VIEW.introStart);
+  shellUniforms.uOpacity.value = intro * VIEW.dataFade;
+  shellUniforms.uSat.value = VIEW.sat;
+  shellUniforms.uSweep.value = VIEW.sweepStart < 0 ? 0 : Math.min(1, (now - VIEW.sweepStart) / CONFIG.sweepMs);
+  if (shellUniforms.uSweep.value >= 1) VIEW.sweepStart = -1, shellUniforms.uSweep.value = 0;
+}
+function updateElectrodes(now) {
+  const t = now / 1000, camPos = camera.position, hl = VIEW.pinned || VIEW.hover;
+  for (const e of VIEW.active) {
+    const introOn = REDUCED_MOTION ? 1 : sstep(0, 250, now - VIEW.introStart - 500 - e.order * 30);
+    let v = VIEW.hasData ? VIEW.shown[e.idx] : 0;
+    lut(v, _c);
+    let kHdr = VIEW.hasData ? 1.0 + 2.2 * Math.pow(v, 1.6) : 0.35;
+    if (!VIEW.ok) kHdr = Math.min(kHdr, 1.0);
+    else if (!REDUCED_MOTION) kHdr *= 1 + 0.03 * Math.sin(t * 2 * Math.PI * 0.3 + e.phase);   // "powered" shimmer
+    kHdr *= mix(0.25, 1, introOn);
+    _v.copy(camPos).sub(e.pos).normalize();
+    const facing = _v.dot(e.nrm);
+    // horizon glare: a core seen edge-on never blooms (capped well below the bloom threshold)
+    kHdr = mix(Math.min(kHdr, 0.35), kHdr, sstep(0.12, 0.4, facing));
+    _col.setRGB(_c[0], _c[1], _c[2], THREE.SRGBColorSpace);
+    const l = 0.2126 * _col.r + 0.7152 * _col.g + 0.0722 * _col.b;
+    _col.setRGB(mix(l, _col.r, VIEW.sat), mix(l, _col.g, VIEW.sat), mix(l, _col.b, VIEW.sat), THREE.LinearSRGBColorSpace);
+    e.coreMat.color.copy(_col).multiplyScalar(kHdr);
+    e.core.scale.setScalar((0.85 + 0.35 * v) * mix(0.6, 1, introOn));
+    e.haloMat.color.copy(_col);
+    // halos of electrodes beyond the horizon must not float over the silhouette
+    e.haloMat.opacity = VIEW.hasData ? (0.10 + 0.45 * v) * introOn * (VIEW.ok ? 1 : 0.4) * sstep(0.12, 0.4, facing) : 0;
+    e.halo.visible = e.haloMat.opacity > 0.004;                         // invisible halos cost no draw call
+    const hs = 0.10 + 0.14 * v; e.halo.scale.set(hs, hs, 1);
+    const isHl = hl === e.name;
+    e.ringMat.color.setHex(isHl ? 0xe8e6e1 : 0x5a6270);
+    // label back-face hiding: no label through the head
+    const vis = facing > 0.05 || isHl ? 1 : 0;
+    if (vis !== e.vis) { e.vis = vis; e.el.style.opacity = vis; }
+    if (isHl !== e._hl) { e._hl = isHl; e.el.classList.toggle('hl', isHl); }
+  }
+  for (const e of VIEW.staleEls) {
+    _v.copy(camPos).sub(e.pos).normalize();
+    const vis = _v.dot(e.nrm) > 0.05 || hl === e.name ? 1 : 0;
+    if (vis !== e.vis) { e.vis = vis; e.el.style.opacity = vis; }
+    e.ringMat.color.setHex(hl === e.name ? 0xe8e6e1 : 0x3a4048);
+  }
+  if (IS_PHONE()) declutterLabels();
+  for (const a of axisLabels) { const vis = camPos.x * Math.sign(a.x) > 0.35 ? 1 : 0; if (a.el._o !== vis) { a.el._o = vis; a.el.style.opacity = vis; } }  // hide when behind the head
+}
+function declutterLabels() { // phone: keep 10px labels, drop those within 28px of an already shown one
+  const shownPts = [], hw = innerWidth / 2, hh = innerHeight / 2, hl = VIEW.pinned || VIEW.hover;
+  const list = VIEW.active.filter(e => e.vis === 1).sort((a, b) => (a.name === hl ? -1 : b.name === hl ? 1 : 0));
+  for (const e of list) {
+    _w.copy(e.labelPos).project(camera); const x = _w.x * hw, y = _w.y * hh;
+    const clash = shownPts.some(p => Math.hypot(p[0] - x, p[1] - y) < 28) && e.name !== hl;
+    e.el.style.opacity = clash ? 0 : 1; if (!clash) shownPts.push([x, y]);
+    e.vis = clash ? 2 : 1;
+  }
+}
+
+// ---- camera: intro dolly, presets, auto-rotate with idle resume ramp ----
+let camAnim = REDUCED_MOTION ? null : { t0: performance.now(), dur: 1400, from: { r: homeRadius() * 1.35, polar: VIEWS.home.polar * D2R, az: VIEWS.home.az * D2R }, to: { r: homeRadius(), polar: VIEWS.home.polar * D2R, az: VIEWS.home.az * D2R }, ease: easeOut };
+let lastInteraction = performance.now(), rotateRampStart = performance.now() + 1400;
+function goView(name) {
+  const v = VIEWS[name]; if (!v) return;
+  _sph.setFromVector3(_v.copy(camera.position).sub(TARGET));
+  let az = v.az * D2R; while (az - _sph.theta > Math.PI) az -= 2 * Math.PI; while (az - _sph.theta < -Math.PI) az += 2 * Math.PI;
+  const r = name === 'home' ? homeRadius() : _sph.radius;
+  camAnim = { t0: performance.now(), dur: REDUCED_MOTION ? 1 : 900, from: { r: _sph.radius, polar: _sph.phi, az: _sph.theta }, to: { r, polar: v.polar * D2R, az }, ease: easeIO };
+  stopAutoRotate();
+}
+function stopAutoRotate() { lastInteraction = performance.now(); controls.autoRotateSpeed = 0; rotateRampStart = -1; ui.interacted(); }
+controls.addEventListener('start', () => { camAnim = null; stopAutoRotate(); });
+controls.addEventListener('end', () => { lastInteraction = performance.now(); });
+function updateCamera(now, dt) {
+  if (camAnim) {
+    const u = Math.min(1, (now - camAnim.t0) / camAnim.dur), e = camAnim.ease(u), f = camAnim.from, t = camAnim.to;
+    _sph.set(mix(f.r, t.r, e), mix(f.polar, t.polar, e), mix(f.az, t.az, e));
+    camera.position.setFromSpherical(_sph).add(TARGET);
+    if (u >= 1) { camAnim = null; lastInteraction = now; }
+  }
+  if (!REDUCED_MOTION) {
+    const idle = !camAnim && !VIEW.pinned && now - lastInteraction > 8000;
+    if (idle && rotateRampStart < 0) rotateRampStart = now;
+    if (!idle && rotateRampStart >= 0 && now < rotateRampStart) controls.autoRotateSpeed = 0;
+    else if (idle || (rotateRampStart >= 0 && now >= rotateRampStart)) controls.autoRotateSpeed = 0.5 * easeIO(Math.min(1, Math.max(0, (now - rotateRampStart) / 1500)));
+    if (VIEW.pinned || camAnim) controls.autoRotateSpeed = 0;
+  }
+  controls.update(dt);
+  const dist = camera.position.distanceTo(TARGET);          // fog follows the camera (spec 6..11 assumed r = 4.6)
+  scene.fog.near = dist + 1.4; scene.fog.far = dist + 6.4;
+}
+
+// ---- hover / pin via raycast (rAF-throttled) ----
+const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), hitList = [];
+let pointerDirty = false, pointerIn = false, pointerXY = [0, 0], downXY = null;
+renderer.domElement.addEventListener('pointermove', ev => { pointerXY = [ev.clientX, ev.clientY]; ndc.set(ev.clientX / innerWidth * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1); pointerDirty = true; pointerIn = ev.pointerType === 'mouse'; });
+renderer.domElement.addEventListener('pointerleave', () => { pointerIn = false; if (VIEW.hoverFrom === 'canvas') setHover(null); });
+renderer.domElement.addEventListener('pointerdown', ev => { downXY = [ev.clientX, ev.clientY]; ui.interacted(); });
+renderer.domElement.addEventListener('pointerup', ev => {
+  if (!downXY || Math.hypot(ev.clientX - downXY[0], ev.clientY - downXY[1]) > 5) return;
+  ndc.set(ev.clientX / innerWidth * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+  setPinned(pick());
+});
+function pick() {
+  raycaster.setFromCamera(ndc, camera);
+  hitList.length = 0; hitList.push(headMesh); for (const e of VIEW.active) hitList.push(e.hit);
+  const hits = raycaster.intersectObjects(hitList, false);
+  return hits.length && hits[0].object !== headMesh ? hits[0].object.userData.name : null;
+}
+function setHover(name, from = 'canvas') { if (VIEW.hover === name) return; VIEW.hover = name; VIEW.hoverFrom = name ? from : null; ui.onHighlight(); }
+function setPinned(name) { VIEW.pinned = name; if (name) stopAutoRotate(); ui.onHighlight(); }
+
+// ---- resize, visibility, auto-degrade ----
+let resizeTimer = 0;
+function doResize() {
+  const w = innerWidth, h = innerHeight;
+  dprCap = Math.min(dprCap, IS_PHONE() ? CONFIG.dprCapPhone : CONFIG.dprCap);
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, dprCap));
+  renderer.setSize(w, h); composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); labelRenderer.setSize(w, h);
+  camera.aspect = w / h;
+  if (IS_PHONE()) { const f = freeArea(); camera.setViewOffset(w, h, 0, h / 2 - (f.top + f.bottom) / 2, w, h); } else camera.clearViewOffset();
+  camera.updateProjectionMatrix();
+  controls.maxDistance = Math.max(8, homeRadius() * 1.3);
+  if (camAnim && camAnim.ease === easeOut) { camAnim.to.r = homeRadius(); camAnim.from.r = homeRadius() * 1.35; }   // intro still running: refit
+  ui.layout();
+}
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(doResize, 100); });
+function sheetHeight() { const c = document.getElementById('controls'); return c ? c.getBoundingClientRect().height + 24 : 0; }
+
+const perf = { frames: 0, acc: 0, lastReport: performance.now(), lowSecs: 0, step: 0, secFrames: 0, secStart: performance.now() };
+function perfTick(now) {
+  perf.frames++; perf.secFrames++;
+  if (now - perf.lastReport >= 500) { ui.fps(perf.frames * 1000 / (now - perf.lastReport)); perf.frames = 0; perf.lastReport = now; }
+  if (now - perf.secStart >= 1000) {
+    const fps = perf.secFrames * 1000 / (now - perf.secStart); perf.secFrames = 0; perf.secStart = now;
+    if (!CONFIG.autoDegrade || document.hidden) return;
+    perf.lowSecs = fps < 45 ? perf.lowSecs + 1 : 0;
+    if (perf.lowSecs >= 3 && perf.step < 3) {
+      perf.lowSecs = 0; perf.step++;
+      if (perf.step === 1) { bloom.enabled = false; console.info('[perf] fps < 45 for 3 s: bloom disabled (halos remain)'); }
+      if (perf.step === 2) { dprCap = 1; doResize(); console.info('[perf] fps < 45 for 3 s: pixel ratio -> 1'); }
+      if (perf.step === 3) { console.info('[perf] fps < 45 for 3 s: no further quality steps (scalp shell already detail ' + CONFIG.shellDetail + ')'); }
+    }
+  }
+}
+
+function animate() {
+  const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  updateDisplay(dt, now);
+  updateShell(now);
+  updateElectrodes(now);
+  updateCamera(now, dt);
+  if (pointerDirty && pointerIn) { pointerDirty = false; const n = pick(); if (n || VIEW.hoverFrom === 'canvas') setHover(n, 'canvas'); glHost.classList.toggle('hovering', !!n); }
+  ui.frame(now);
+  composer.render();
+  labelRenderer.render(scene, camera);
+  perfTick(now);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) renderer.setAnimationLoop(null);
+  else { lastT = performance.now(); perf.secStart = performance.now(); perf.secFrames = 0; renderer.setAnimationLoop(animate); }
+});
+
+// =====================================================================================
+// ===== UI =====
+// DOM only. Talks to the renderer through setBand / goView / setHover / setPinned, and reads the store at 10 Hz.
+// =====================================================================================
+const $ = id => document.getElementById(id);
+const fmtTick = v => { // 2 significant figures
+  if (!Number.isFinite(v)) return '--';
+  const a = Math.abs(v); if (a === 0) return '0';
+  if (a < 1e-3 || a >= 1e5) return v.toExponential(1).replace('e+', 'e');
+  if (a >= 100) { const p = Math.pow(10, Math.floor(Math.log10(a)) - 1); return String(Math.round(v / p) * p); }
+  return String(Number(v.toPrecision(2)));
+};
+const fmtVal = v => {
+  if (!Number.isFinite(v)) return '--';
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e5)) return v.toExponential(2).replace('e+', 'e');
+  if (a >= 100) return v.toFixed(0); if (a >= 1) return v.toFixed(1); return v.toPrecision(2);
+};
+const unitText = () => { const u = store.units; if (!u || u === 'uV^2') return 'µV²'; if (u === 'relative') return 'relative'; return u; };
+
+const ui = (() => {
+  const cells = new Map(); let lastBand = VIEW.band, interactedAt = 0, statusShown = '', srStatusPrev = '';
+  const tickEls = [0, 0.25, 0.5, 0.75, 1].map((p, i) => { const s = document.createElement('span'); s.style.left = p * 100 + '%'; if (i === 0) s.className = 'first'; if (i === 4) s.className = 'last'; $('ticks').appendChild(s); return s; });
+  $('legendBar').style.background = lutGradientCss();
+  const sparkCtx = c => { const r = Math.min(2, devicePixelRatio || 1), w = c.clientWidth || c.width, h = c.clientHeight || c.height; if (c.width !== Math.round(w * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); } const x = c.getContext('2d'); x.setTransform(r, 0, 0, r, 0, 0); return [x, w, h]; };
+  function drawSpark(canvas, data, stroke, width, dots) {
+    const [x, w, h] = sparkCtx(canvas); x.clearRect(0, 0, w, h);
+    if (data.length < 2) return;
+    let lo = Infinity, hi = -Infinity; for (const v of data) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    const span = hi - lo || Math.abs(hi) || 1, pad = 3, X = i => pad + (w - 2 * pad) * i / (CONFIG.historyLen - 1), Y = v => h - pad - (h - 2 * pad) * (v - lo) / span;
+    const off = CONFIG.historyLen - data.length;
+    if (dots) { x.strokeStyle = '#2f3640'; x.setLineDash([2, 2]); x.lineWidth = 1; x.beginPath(); x.moveTo(pad, Y(hi) + .5); x.lineTo(w - pad, Y(hi) + .5); x.moveTo(pad, Y(lo) - .5); x.lineTo(w - pad, Y(lo) - .5); x.stroke(); x.setLineDash([]); }
+    x.strokeStyle = stroke; x.lineWidth = width; x.lineJoin = 'round'; x.beginPath();
+    data.forEach((v, i) => (i ? x.lineTo(X(i + off), Y(v)) : x.moveTo(X(i + off), Y(v)))); x.stroke();
+    if (dots) { x.fillStyle = '#e8e6e1'; x.beginPath(); x.arc(X(data.length - 1 + off), Y(data[data.length - 1]), 1.5, 0, Math.PI * 2); x.fill(); }
+  }
+  function rebuildTable(active, unknown, placeholder) {
+    const body = $('chBody'); body.textContent = ''; cells.clear();
+    const byRow = new Map(); for (const e of active) { if (!byRow.has(e.m.row)) byRow.set(e.m.row, []); byRow.get(e.m.row).push(e); }
+    const mk = e => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'ch'; b.dataset.name = e.name;
+      b.innerHTML = `<span class="l1"><span>${e.name}</span><span class="v">--</span></span><span class="bar"><i></i></span><canvas aria-hidden="true"></canvas>`;
+      b.setAttribute('aria-label', `${e.name}, ${e.m.region}`);
+      b.addEventListener('mouseenter', () => setHover(e.name, 'table')); b.addEventListener('mouseleave', () => { if (VIEW.hoverFrom === 'table') setHover(null); });
+      b.addEventListener('focus', () => setHover(e.name, 'table')); b.addEventListener('blur', () => { if (VIEW.hoverFrom === 'table') setHover(null); });
+      b.addEventListener('click', () => setPinned(VIEW.pinned === e.name ? null : e.name));
+      cells.set(e.name, { b, v: b.querySelector('.v'), bar: b.querySelector('.bar i'), spark: b.querySelector('canvas'), e, last: '' });
+      return b;
+    };
+    for (const row of TABLE_ROWS) {
+      const list = byRow.get(row); if (!list) continue;
+      const tr = document.createElement('tr'); tr.title = row;
+      if (row === 'Midline') {
+        const td = document.createElement('td'); td.colSpan = 2; const box = document.createElement('div'); box.className = 'midcells';
+        list.forEach(e => box.appendChild(mk(e))); td.appendChild(box); tr.appendChild(td);
+      } else {
+        for (const side of ['L', 'R']) { const td = document.createElement('td'); const e = list.find(x => x.m.side === side); if (e) td.appendChild(mk(e)); tr.appendChild(td); }
+      }
+      body.appendChild(tr);
+    }
+    setUnplaced(unknown);
+    const n = placeholder ? 0 : active.length;
+    $('subtitle').textContent = `EEG band power · 10–20 montage · ${n ? n : '--'} ch`;
+    $('coverKey').hidden = active.some(e => /^t[78]$/i.test(e.name));
+    $('gl').setAttribute('aria-label', `3D head showing ${VIEW.band} band power across ${n} EEG electrodes. See channel table for values.`);
+    onHighlight();
+  }
+  function setUnplaced(unknown) { const u = $('unplaced'); u.hidden = !unknown.length; u.textContent = unknown.length ? 'Not placed (no 10–20 position): ' + unknown.join(', ') : ''; }
+
+  function onIngest() { // 10 Hz DOM updates
+    const band = VIEW.band, rng = store.range(band), has = store.hasBand(band);
+    $('legendUnit').textContent = `(${unitText()})`;
+    tickEls.forEach((s, i) => { const t = has ? fmtTick(rng.lo + (rng.hi - rng.lo) * i / 4) : '--'; if (s.textContent !== t) s.textContent = t; });
+    let sum = 0, cnt = 0;
+    for (const c of cells.values()) {
+      const r = c.e.rec, raw = r ? store.raw(band, r.name) : NaN, nv = r ? store.norm(band, r.name) : 0;
+      const txt = fmtVal(raw); if (txt !== c.last) { c.v.textContent = txt; c.last = txt; }
+      c.bar.style.transform = `scaleX(${Number.isFinite(raw) ? nv : 0})`; c.bar.style.background = lutCss(nv);
+      if (Number.isFinite(raw)) { sum += raw; cnt++; }
+      if (r) drawSpark(c.spark, store.history(band, r.name), '#8a9099', 1.25, false);
+    }
+    $('meanVal').textContent = cnt ? `${fmtVal(sum / cnt)} ${unitText()}` : '--';
+    const pairs = []; const rows = new Map();
+    for (const c of cells.values()) if (c.e.m.side !== 'M') { if (!rows.has(c.e.m.row)) rows.set(c.e.m.row, {}); rows.get(c.e.m.row)[c.e.m.side] = c.e.rec; }
+    for (const p of rows.values()) if (p.L && p.R) { const l = store.raw(band, p.L.name), r = store.raw(band, p.R.name); if (Number.isFinite(l) && Number.isFinite(r) && l + r !== 0) pairs.push((r - l) / (r + l)); }
+    const asym = pairs.length ? pairs.reduce((a, b) => a + b, 0) / pairs.length : NaN;
+    $('asymVal').textContent = Number.isFinite(asym) ? (Math.abs(asym) < 0.005 ? '0.00' : (asym > 0 ? '+' : '−') + Math.abs(asym).toFixed(2)) : '--';
+    updateTooltip(true);
+  }
+  function onBand(band) {
+    const info = CONFIG.bandInfo[band];
+    if ($('band').value !== band) $('band').value = band;
+    $('bandDesc').textContent = info.desc;
+    $('chCaption').textContent = `Band power by channel, ${band}`;
+    $('gl').setAttribute('aria-label', `3D head showing ${band} band power across ${VIEW.active.length} EEG electrodes. See channel table for values.`);
+    const lb = $('legendBand'); lb.classList.add('out');
+    setTimeout(() => { lb.textContent = `${info.label} power`; lb.classList.remove('out'); }, 150);
+    tickEls.forEach(s => (s.style.opacity = 0)); setTimeout(() => { onIngest(); tickEls.forEach(s => (s.style.opacity = 1)); }, 150);
+    lastBand = band;
+  }
+  function onHighlight() {
+    const hl = VIEW.pinned || VIEW.hover;
+    for (const [n, c] of cells) { c.b.classList.toggle('hl', n === hl); c.b.classList.toggle('pinned', n === VIEW.pinned); }
+    updateTooltip(true);
+  }
+  function updateTooltip(content) {
+    const tt = $('tooltip'), name = VIEW.pinned || VIEW.hover, e = name && EL_BY_NAME.get(name);
+    const show = !!(e && e.idx >= 0 && e.rec);
+    tt.hidden = !show;
+    $('legendMarker').style.opacity = show ? 1 : 0;
+    if (!show) return;
+    const band = VIEW.band, raw = store.raw(band, e.rec.name), nv = store.norm(band, e.rec.name);
+    $('legendMarker').style.left = nv * 100 + '%';
+    if (!content) return;
+    $('ttName').textContent = e.name; $('ttRegion').textContent = e.m.region;
+    $('ttValue').textContent = fmtVal(raw); $('ttUnit').textContent = unitText();
+    $('ttSwatch').style.background = lutCss(nv);
+    $('ttPct').textContent = `${Math.round(nv * 100)}% of range · ${CONFIG.bandInfo[band].label}`;
+    drawSpark($('ttSpark'), store.history(band, e.rec.name), '#a3a7ad', 1.5, true);
+  }
+  function placeTooltip() {
+    const tt = $('tooltip'); if (tt.hidden) return;
+    const name = VIEW.pinned || VIEW.hover, e = EL_BY_NAME.get(name); if (!e) return;
+    let x, y;
+    if (VIEW.hoverFrom === 'canvas' && !VIEW.pinned) { x = pointerXY[0]; y = pointerXY[1]; }
+    else { _w.copy(e.pos).project(camera); x = (_w.x + 1) / 2 * innerWidth; y = (1 - _w.y) / 2 * innerHeight; }
+    const W = 200, H = tt.offsetHeight || 150; x += 14; y += 14;
+    if (x + W > innerWidth - 8) x -= W + 28; if (y + H > innerHeight - 8) y -= H + 28;
+    tt.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  }
+  function renderStatus(now) {
+    const s = VIEW.status, info = VIEW.statusInfo || {};
+    let label = 'Idle', sub = '';
+    const ago = info.lastFrameAt ? Math.max(0, Math.round((now - info.lastFrameAt) / 1000)) : null;
+    if (s === 'mock') { label = 'Mock'; sub = 'synthetic'; }
+    else if (s === 'connecting') { label = 'Connecting…'; sub = info.open ? 'waiting for data' : (info.url || '').replace(/^wss?:\/\//, ''); }
+    else if (s === 'live') { label = 'Live'; sub = `${((source && source.rate) || 0).toFixed(1)} Hz`; }
+    else if (s === 'stale') { label = 'Stale'; sub = `${ago}s ago`; }
+    else if (s === 'disconnected') { label = 'Disconnected'; sub = info.retryAt ? `retry in ${Math.max(0, Math.ceil((info.retryAt - now) / 1000))}s` : (info.reason || ''); }
+    const key = s + '|' + label + '|' + sub;
+    if (key !== statusShown) { statusShown = key; $('chip').dataset.state = s; $('chipLabel').textContent = label; $('chipInfo').textContent = sub; }
+    if (label !== srStatusPrev) { srStatusPrev = label; $('srStatus').textContent = `Data source: ${label}`; }
+    // honest overlay
+    const sig = $('signal');
+    if (!store.hasBand(VIEW.band)) {
+      sig.hidden = false; $('signalTitle').textContent = store.channels().length ? `No ${VIEW.band} data in this stream` : 'Waiting for data…';
+      $('signalSub').textContent = s === 'disconnected' ? (info.retryAt ? `Source unreachable · retry in ${Math.max(0, Math.ceil((info.retryAt - now) / 1000))}s` : `Source ${info.reason || 'disconnected'}`) : s === 'connecting' ? (info.open ? 'Connected, bridge is buffering' : 'Connecting to ' + (info.url || '')) : '';
+    } else if (s === 'stale' || s === 'disconnected') {
+      sig.hidden = false; $('signalTitle').textContent = 'No signal'; $('signalSub').textContent = ago != null ? `Last data ${ago}s ago · values frozen` : 'values frozen';
+    } else sig.hidden = true;
+    const frozen = !(s === 'mock' || s === 'live');
+    if (frozen !== renderStatus.frozen) { renderStatus.frozen = frozen; $('channels').classList.toggle('frozen', frozen); $('legend').classList.toggle('frozen', frozen); }
+  }
+  let lastStatusRender = 0;
+  function frame(now) {
+    placeTooltip();
+    if (now - lastStatusRender > 250) { lastStatusRender = now; renderStatus(now); }
+    if (interactedAt && now - interactedAt > 6000) $('hint').classList.add('gone');
+  }
+  function interacted() { if (!interactedAt) interactedAt = performance.now(); }
+  function fps(v) { const el = $('fps'); el.textContent = (v < 45 ? '▼ ' : '') + Math.round(v) + ' fps'; el.classList.toggle('low', v < 45); }
+  function layout() { document.documentElement.style.setProperty('--sheet-h', (IS_PHONE() ? sheetHeight() : 0) + 'px'); }
+
+  // ---- controls wiring ----
+  $('band').addEventListener('change', e => setBand(e.target.value));
+  addEventListener('keydown', e => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' && e.target.type === 'text') return;
+    if (e.key >= '1' && e.key <= '5' && !e.ctrlKey && !e.metaKey && !e.altKey) { setBand(CONFIG.bands[+e.key - 1]); }
+    else if (e.key === 'Escape') { setPinned(null); setHover(null); }
+    else if ((e.key === 'f' || e.key === 'F') && tag !== 'SELECT') { const f = $('fps'); f.style.visibility = f.style.visibility === 'hidden' ? '' : 'hidden'; }
+  });
+  document.querySelectorAll('input[name=src]').forEach(r => r.addEventListener('change', () => {
+    const ws = $('srcWs').checked; $('wsRow').hidden = !ws; $('montageRow').hidden = ws;
+    if (!ws) useSource(createSource({ kind: 'mock', montage: $('mont19').checked ? 19 : 10 }));
+    else { detachSource(); $('wsBtn').textContent = 'Connect'; }
+    layout();
+  }));
+  $('wsBtn').addEventListener('click', () => {
+    const running = source instanceof WebSocketSource && !(source.state === 'disconnected' && source.info.reason === 'stopped');
+    if (running) { source.stop(); $('wsBtn').textContent = 'Connect'; return; }
+    useSource(createSource({ kind: 'ws', url: $('wsUrl').value.trim(), flatBand: () => VIEW.band }));
+    $('wsBtn').textContent = 'Disconnect';
+  });
+  $('wsUrl').addEventListener('keydown', e => { if (e.key === 'Enter') $('wsBtn').click(); });
+  document.querySelectorAll('input[name=mont]').forEach(r => r.addEventListener('change', () => useSource(createSource({ kind: 'mock', montage: $('mont19').checked ? 19 : 10 }))));
+  document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => goView(b.dataset.view)));
+  $('lock').addEventListener('change', e => { store.lockRange(e.target.checked); $('legendCaption').textContent = `Per-band ${e.target.checked ? 'range locked' : 'auto range'}`; });
+  $('chToggle').addEventListener('click', () => { const o = $('channels').classList.toggle('open'); $('chToggle').setAttribute('aria-expanded', o); });
+  $('moreBtn').addEventListener('click', () => { const o = $('controls').classList.toggle('more-open'); $('moreBtn').setAttribute('aria-expanded', o); $('moreBtn').textContent = o ? 'Less' : 'More'; layout(); doResize(); });
+  addEventListener('pointerdown', ev => { if (ev.target === renderer.domElement) return; if (!ev.target.closest('#channels, #controls, #chToggle') && VIEW.pinned) setPinned(null); });
+  renderer.domElement.addEventListener('wheel', () => { interacted(); stopAutoRotate(); }, { passive: true });
+
+  return { rebuildTable, setUnplaced, onIngest, onBand, onHighlight, frame, interacted, fps, layout };
+})();
+
+// =====================================================================================
+// ===== BOOT =====
+// =====================================================================================
+let source = null, unsubs = [];
+function detachSource() { // user chose WebSocket but has not connected yet: no data, said so honestly
+  unsubs.forEach(u => u()); unsubs = [];
+  if (source) source.stop();
+  source = null; store.reset();
+  VIEW.status = 'disconnected'; VIEW.statusInfo = { reason: 'not connected' };
+}
+function useSource(src) {
+  detachSource();
+  source = src;
+  if (src instanceof WebSocketSource) src.flatBand = () => VIEW.band;
+  unsubs.push(src.onStatus((state, info) => { VIEW.status = state; VIEW.statusInfo = info; }));
+  unsubs.push(src.onFrame(frame => store.ingest(frame)));
+  src.start();
+}
+store.onIngest(() => ui.onIngest());
+
+{ // initial UI state from URL
+  const s = createSource();
+  if (s instanceof WebSocketSource) { $('srcWs').checked = true; $('wsRow').hidden = false; $('montageRow').hidden = true; $('wsUrl').value = s.url; $('wsBtn').textContent = 'Disconnect'; }
+  else if (PARAMS.get('montage') === '19') $('mont19').checked = true;
+  const b = PARAMS.get('band'); if (b && CONFIG.bands.includes(b)) { $('band').value = b; VIEW.band = b; VIEW.bi = CONFIG.bands.indexOf(b); }
+  ui.onBand(VIEW.band);
+  useSource(s);
+}
+syncMontage();
+doResize();
+renderer.setAnimationLoop(animate);
+window.__eeg = { store, VIEW, CONFIG, renderer, setBand, goView, get source() { return source; } }; // debugging / validation hook
+</script>
+</body>
+</html>

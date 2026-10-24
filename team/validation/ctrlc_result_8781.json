@@ -1,0 +1,9 @@
+{
+ "port": 8781,
+ "with_client": true,
+ "exit_code": "TIMEOUT (still running after 20 s)",
+ "exit_s": 20.0,
+ "msgs_received": 228,
+ "client_close": "ConnectionClosedError: no close frame received or sent",
+ "bridge_output": "MOCK mode: 10 synthetic channels at 256.0 Hz: Fp1, Fp2, F3, F4, C3, C4, P3, P4, O1, O2\nServing on ws://localhost:8781 using websockets.asyncio (modern)\nSending bandpower messages at 10.0 Hz\nWaiting for data to fill the buffer...\nClient connected (1 total): ('::1', 49265, 0, 0)\n"
+}

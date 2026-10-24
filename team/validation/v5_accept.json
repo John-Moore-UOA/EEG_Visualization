@@ -1,0 +1,295 @@
+{
+ "fps_10s": {
+  "fps": 60.03636145689148,
+  "worstFrameMs": 24.599999994039536
+ },
+ "main_pass_info": {
+  "calls": 49,
+  "triangles": 38042,
+  "lines": 3500,
+  "points": 0
+ },
+ "bloom_enabled_after_10s": true,
+ "autorotate_deg_per_s": -2.999843940732353,
+ "az_rate_after_drag_every_0.5s": [
+  -13.46,
+  -0.92,
+  -0.08,
+  -0.01,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  -0.0,
+  0.0,
+  0.0,
+  -0.0,
+  -0.21,
+  -1.7,
+  -2.9,
+  -2.99,
+  -3.1,
+  -3.1,
+  -3.1,
+  -3.0
+ ],
+ "label_occlusion": {
+  "checked": 120,
+  "bad": []
+ },
+ "select_style": {
+  "appearance": "none",
+  "bg": "rgb(22, 26, 32)",
+  "h": "36px",
+  "label": true
+ },
+ "keys": {
+  "1": "delta",
+  "2": "theta",
+  "3": "alpha",
+  "4": "beta",
+  "5": "gamma"
+ },
+ "crossfade_ms": 603,
+ "reswitch_max_jump": 0.05421370267868042,
+ "fps_text_updates_per_s": 2,
+ "hover_O1": {
+  "hover": "O1",
+  "tooltipVisible": true,
+  "text": "O1 | Left occipital | 19.3 | µV² | 76% of range · Alpha",
+  "sparkHasInk": 563,
+  "rowHl": true,
+  "marker": "1"
+ },
+ "row_hover_C4": {
+  "ring": "e8e6e1",
+  "labelHl": true
+ },
+ "pin_then_esc": [
+  "C4",
+  null
+ ],
+ "aria_live": {
+  "live": "polite",
+  "text": "Data source: Mock"
+ },
+ "tab_order": [
+  "band [solid 2px]",
+  "srcMock [label:solid 2px]",
+  "mont10 [label:solid 2px]",
+  "home [solid 2px]",
+  "top [solid 2px]",
+  "front [solid 2px]",
+  "left [solid 2px]",
+  "right [solid 2px]",
+  "back [solid 2px]",
+  "lock [solid 2px]",
+  "Fp1 [solid 2px]",
+  "Fp2 [solid 2px]",
+  "F3 [solid 2px]",
+  "F4 [solid 2px]",
+  "C3 [solid 2px]",
+  "C4 [solid 2px]",
+  "P3 [solid 2px]",
+  "P4 [solid 2px]",
+  "O1 [solid 2px]",
+  "O2 [solid 2px]",
+  "BODY [none 3px]",
+  "band [solid 2px]"
+ ],
+ "min_font_px": {
+  "min": 10,
+  "who": "elabel"
+ },
+ "ticks_align": {
+  "n": 5,
+  "firstLeftVsBar": 0,
+  "lastRightVsBar": 0,
+  "texts": [
+   "5.5",
+   "10",
+   "14",
+   "19",
+   "23"
+  ]
+ },
+ "mask": {
+  "maxMaskBelow115": 0,
+  "maxMaskEyesNose": 0.011410209350287914,
+  "maxMaskEars": 0,
+  "T7": 0,
+  "Cz": 0.883,
+  "O1": 0.874,
+  "coverKeyHidden": false
+ },
+ "ear_rotation": [
+  [
+   0,
+   0,
+   0
+  ],
+  [
+   0,
+   0,
+   0
+  ]
+ ],
+ "mask19": {
+  "T7": 0.899,
+  "Cz": 0.92,
+  "coverKeyHidden": true,
+  "info": {
+   "calls": 85,
+   "triangles": 46844,
+   "lines": 3500,
+   "points": 0
+  }
+ },
+ "main_pass_info_19": {
+  "calls": 85,
+  "triangles": 46844,
+  "lines": 3500,
+  "points": 0
+ },
+ "rm_intro_opacity_at_0.5s": 0.9420862242727749,
+ "rm_az_change_10s": 0,
+ "rm_shimmer": 0,
+ "rm_sweep": 0,
+ "phone": {
+  "hscroll": false,
+  "small": [
+   "Band 33x14",
+   "Mock 161x42",
+   "WebSocket 162x42",
+   "10 ch 161x42",
+   "19 ch 162x42"
+  ],
+  "controls": [
+   473,
+   800
+  ],
+  "legend": [
+   361,
+   461
+  ],
+  "dpr": 1.5
+ },
+ "phone_head_bbox": [
+  77,
+  89,
+  304,
+  309
+ ],
+ "degrade": {
+  "fps": "▼ 31 fps",
+  "dpr": 1
+ },
+ "mock_O1_alpha": [
+  23.2,
+  23.3,
+  23.3,
+  23.2,
+  23,
+  22.8,
+  22.6,
+  22.5,
+  22.4,
+  22.3,
+  22.2,
+  22.1,
+  21.9,
+  21.5,
+  21.1,
+  20.8,
+  20.7,
+  26.4,
+  41.7,
+  50.4,
+  49.9,
+  49.3,
+  48.8,
+  48.4,
+  47.7,
+  46.9,
+  46.2,
+  45.6,
+  43.7,
+  35.1,
+  24.7,
+  17.7,
+  17.1,
+  17.1,
+  17.2,
+  17.3,
+  17.4,
+  17.4,
+  17.4,
+  17.4,
+  17.3,
+  17.2,
+  16.8,
+  16.4,
+  15.9,
+  15.7,
+  15.6,
+  15.7,
+  15.9,
+  16.1,
+  16.5,
+  17.1,
+  17.7,
+  18.2,
+  18.5,
+  18.9,
+  19.2,
+  19.4,
+  19.6,
+  19.6,
+  19.5,
+  19.3,
+  19.1,
+  19,
+  18.9,
+  18.7,
+  18.3,
+  17.7,
+  17.1,
+  16.6,
+  16.2,
+  15.9,
+  15.7,
+  15.7,
+  16,
+  16.4,
+  16.8,
+  17.1,
+  17.5,
+  18.1,
+  18.6,
+  19,
+  19.3,
+  19.4,
+  19.4,
+  19.3,
+  19.2,
+  19.1,
+  19.2,
+  19.2
+ ],
+ "mock_alpha_means": {
+  "Fp1": 6.1,
+  "Fp2": 6.8,
+  "F3": 6,
+  "F4": 6.7,
+  "C3": 9.4,
+  "C4": 8.7,
+  "P3": 13.2,
+  "P4": 14.9,
+  "O1": 17.9,
+  "O2": 17.2
+ }
+}

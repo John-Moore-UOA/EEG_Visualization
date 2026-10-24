@@ -1,0 +1,8 @@
+{
+ "name": "async",
+ "exit": 0,
+ "secs": 0.01,
+ "out": "async control got KeyboardInterrupt\n",
+ "client_msgs": 0,
+ "client_end": null
+}

@@ -1,0 +1,9 @@
+{
+ "port": 8782,
+ "with_client": false,
+ "exit_code": "TIMEOUT (still running after 20 s)",
+ "exit_s": 20.01,
+ "msgs_received": 0,
+ "client_close": null,
+ "bridge_output": "MOCK mode: 10 synthetic channels at 256.0 Hz: Fp1, Fp2, F3, F4, C3, C4, P3, P4, O1, O2\nServing on ws://localhost:8782 using websockets.asyncio (modern)\nSending bandpower messages at 10.0 Hz\nWaiting for data to fill the buffer...\n"
+}

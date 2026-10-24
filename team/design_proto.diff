@@ -1,0 +1,124 @@
+--- orig.html	2026-10-24 18:48:10.362296200 +1300
++++ index.html	2026-10-24 18:47:38.068644200 +1300
+@@ -380,7 +380,7 @@
+   bandMixMs: REDUCED_MOTION ? 150 : 600,
+   sweepMs: 700,
+   // NB: IcosahedronGeometry 'detail' is LINEAR in three r125+ (20*(d+1)^2 tris), not recursive as the spec assumed.
+-  headDetail: 20,             // ~8.8k tris: still visibly faceted, fine enough for nose/brow/sockets
++  headDetail: 40,             // ~8.8k tris: still visibly faceted, fine enough for nose/brow/sockets
+   shellDetail: 36,            // ~27k tris before culling (~16k kept), smooth heatmap skin
+   dprCap: 2, dprCapPhone: 1.5,
+   bloom: { strength: 0.65, radius: 0.35, threshold: 0.9 },
+@@ -428,7 +428,7 @@
+ const D2R = Math.PI / 180;
+ for (const m of MONTAGE) {
+   const th = m.th * D2R, ph = m.ph * D2R;
+-  m.dir = [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)];
++  m.dir = [-Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)];
+ }
+ const MONTAGE_BY_NAME = new Map(MONTAGE.map(m => [m.name.toLowerCase(), m]));
+ const montageFor = name => MONTAGE_BY_NAME.get(String(name).toLowerCase()) || null;
+@@ -789,8 +789,8 @@
+   let off = 0;
+   off += 0.06 * angBump(dx, dy, dz, 0, -0.80, 0.60, 0.20);                            //   chin
+   if (dz > 0.4) off += 0.04 * Math.exp(-(((dy + 0.30) / 0.06) ** 2)) * sstep(0.5, 0.78, dz);    // 4 brow ridge
+-  off -= 0.085 * angBump(dx, dy, dz, 0.33, -0.44, 0.84, 0.13);                        // 5 eye sockets
+-  off -= 0.085 * angBump(dx, dy, dz, -0.33, -0.44, 0.84, 0.13);
++  off -= 0.07 * angBump(dx, dy, dz, 0.33, -0.42, 0.84, 0.14);                        // 5 eye sockets
++  off -= 0.07 * angBump(dx, dy, dz, -0.33, -0.42, 0.84, 0.14);
+   if (dz > 0) {
+     const ax = Math.atan2(dx, dz), el = Math.asin(Math.max(-1, Math.min(1, dy)));
+     const en = el + 0.64, elw = en > 0 ? 0.22 : 0.07, axw = 0.085 + 0.035 * sstep(0, -0.1, en);       // 6 nose: bridge from nasion, flared tip
+@@ -839,10 +839,10 @@
+ })();
+ 
+ const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.05, 50);
+-const TARGET = new THREE.Vector3(0, -0.15, 0);
++const TARGET = new THREE.Vector3(0, -0.22, 0.05);
+ const VIEWS = {
+-  home: { polar: 64, az: -68 }, top: { polar: 7, az: 0 }, front: { polar: 88, az: 0 },
+-  left: { polar: 80, az: -90 }, right: { polar: 80, az: 90 }, back: { polar: 80, az: 180 },
++  home: { polar: 64, az: 84 }, top: { polar: 7, az: 0 }, front: { polar: 88, az: 0 },
++  left: { polar: 80, az: 90 }, right: { polar: 80, az: -90 }, back: { polar: 80, az: 180 },
+ };
+ function freeArea() { // screen region not covered by the phone bottom sheet + legend (desktop: whole canvas)
+   if (!IS_PHONE()) return { top: 0, bottom: innerHeight };
+@@ -852,7 +852,7 @@
+ function homeRadius() { // fit the bust (~2.5 units tall, ~2.4 deep incl. nose) inside the free area
+   const t = Math.tan(17 * D2R), f = freeArea(), hFree = Math.max(160, f.bottom - f.top);
+   const rV = 2.5 * innerHeight / (0.85 * hFree * 2 * t), rH = 2.4 * innerHeight / (0.92 * innerWidth * 2 * t);
+-  return Math.min(14, Math.max(5.6, rV, rH));
++  return Math.min(14, Math.max(5.4, rV, rH));
+ }
+ const controls = new OrbitControls(camera, renderer.domElement);
+ Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: false, minDistance: 2.6, maxDistance: 8,
+@@ -868,17 +868,24 @@
+ // Spec intensities assume legacy light units; three r155+ is physically based (Lambert includes 1/PI), so scale by PI.
+ const LU = Math.PI;
+ const hemi = new THREE.HemisphereLight(0x1b2230, 0x000000, 0.6 * LU); scene.add(hemi);
+-const key = new THREE.DirectionalLight(0xdfe6ee, 1.4 * LU); key.position.set(-1.6, 3.0, 2.8); scene.add(key);
+-const fill = new THREE.DirectionalLight(0x8fa3b8, 0.3 * LU); fill.position.set(3, 0.6, 1.5); scene.add(fill);
+-const rim = new THREE.DirectionalLight(0xb9c6d6, 1.4 * LU); rim.position.set(-0.5, 2.0, -4); scene.add(rim);
++const key = new THREE.DirectionalLight(0xdfe6ee, 1.4 * LU); key.position.set(1.6, 3.0, 2.8); scene.add(key);
++const fill = new THREE.DirectionalLight(0x8fa3b8, 0.3 * LU); fill.position.set(-3, 0.6, 1.5); scene.add(fill);
++const rim = new THREE.DirectionalLight(0xb9c6d6, 2.2 * LU); rim.position.set(0.5, 2.0, -4); scene.add(rim);
+ 
+ // ---- head (faceted skull + fresnel rim + facet wire), ears, neck ----
+ function headMaterial(extra = {}) {
+-  const m = new THREE.MeshStandardMaterial({ color: PARAMS.has('clay') ? 0x9aa0a8 : 0x1c2026, roughness: 0.82, metalness: 0.0, flatShading: true, ...extra });
++  const m = new THREE.MeshStandardMaterial({ color: PARAMS.has('clay') ? 0x9aa0a8 : 0x15181d, roughness: 0.62, metalness: 0.0, flatShading: false, ...extra });
+   m.onBeforeCompile = sh => {
+     sh.uniforms.uRim = { value: new THREE.Color(0x8fa3b8) };
+-    sh.fragmentShader = 'uniform vec3 uRim;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>',
+-      '#include <emissivemap_fragment>\n totalEmissiveRadiance += uRim * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.5) * 0.30;');
++    sh.vertexShader = 'varying vec3 vObj;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vObj = (modelMatrix * vec4(transformed,1.0)).xyz;');
++    sh.fragmentShader = 'uniform vec3 uRim;\nvarying vec3 vObj;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>',
++      `#include <emissivemap_fragment>
++       float fr = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.4);
++       totalEmissiveRadiance += uRim * fr * 0.55;
++       float cy = vObj.y / 0.05; float cw = fwidth(cy); float cf = abs(fract(cy - 0.5) - 0.5);
++       float cl = 1.0 - smoothstep(0.0, cw * 1.25, cf);
++       float below = smoothstep(0.45, 0.05, vObj.y) * (1.0 - smoothstep(-1.2, -1.75, vObj.y));
++       totalEmissiveRadiance += uRim * cl * below * (0.07 + 0.33 * fr);`);
+   };
+   return m;
+ }
+@@ -900,17 +907,17 @@
+   return new THREE.EdgesGeometry(g, 1);
+ })();
+ const wire = new THREE.LineSegments(wireGeo, new THREE.LineBasicMaterial({ color: 0x3a4250, transparent: true, opacity: 0.22, depthWrite: false }));
+-headGroup.add(wire);
++// wire removed
+ for (const s of [-1, 1]) {
+-  const ear = new THREE.Mesh(new THREE.SphereGeometry(1, 7, 5), headMaterial());
+-  ear.scale.set(0.06, 0.20, 0.12); ear.position.set(0.83 * s, -0.40, -0.08);   // brow-to-nose-tip height, below T7/T8 ear.rotation.set(0, 0.18 * s, -0.08 * s);
++  const ear = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), headMaterial());
++  ear.scale.set(0.045, 0.165, 0.095); ear.position.set(0.83 * s, -0.40, -0.08);   // brow-to-nose-tip height, below T7/T8 ear.rotation.set(0, 0.18 * s, -0.08 * s);
+   headGroup.add(ear);
+ }
+ {
+   const a = new Uint8Array(64 * 4);
+   for (let i = 0; i < 64; i++) { const v = Math.round(255 * Math.pow(sstep(0.2, 0.95, i / 63), 2.0)); a.set([v, v, v, 255], i * 4); }
+   const alphaTex = new THREE.DataTexture(a, 1, 64); alphaTex.needsUpdate = true; alphaTex.magFilter = alphaTex.minFilter = THREE.LinearFilter;
+-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.48, 1.1, 14, 1, true), headMaterial({ transparent: true, alphaMap: alphaTex, depthWrite: false }));
++  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.46, 1.2, 64, 1, true), headMaterial({ transparent: true, alphaMap: alphaTex, depthWrite: false }));
+   neck.position.set(0, -1.15, -0.2); neck.rotation.x = -0.12; headGroup.add(neck);
+ }
+ 
+@@ -935,7 +942,7 @@
+ 
+ // ---- L / R orientation markers ----
+ const axisLabels = [];
+-for (const [txt, x] of [['L', -1.22], ['R', 1.22]]) {
++for (const [txt, x] of [['L', 1.22], ['R', -1.22]]) {
+   const el = document.createElement('div'); el.className = 'axislabel'; el.textContent = txt;
+   const o = new CSS2DObject(el); o.position.set(x, -0.05, 0); scene.add(o); axisLabels.push({ o, el, x });
+ }
+@@ -1216,6 +1223,7 @@
+     if (!VIEW.ok) kHdr = Math.min(kHdr, 1.0);
+     else if (!REDUCED_MOTION) kHdr *= 1 + 0.03 * Math.sin(t * 2 * Math.PI * 0.3 + e.phase);   // "powered" shimmer
+     kHdr *= mix(0.25, 1, introOn);
++    { _v.copy(camera.position).sub(e.pos).normalize(); kHdr = mix(Math.min(kHdr, 0.5), kHdr, sstep(0.05, 0.35, _v.dot(e.nrm))); }
+     _col.setRGB(_c[0], _c[1], _c[2], THREE.SRGBColorSpace);
+     const l = 0.2126 * _col.r + 0.7152 * _col.g + 0.0722 * _col.b;
+     _col.setRGB(mix(l, _col.r, VIEW.sat), mix(l, _col.g, VIEW.sat), mix(l, _col.b, VIEW.sat), THREE.LinearSRGBColorSpace);
