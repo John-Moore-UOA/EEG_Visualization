@@ -1,0 +1,16 @@
+<!doctype html><html><body><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {FBXLoader} from 'three/addons/loaders/FBXLoader.js';
+const t0=performance.now();
+new FBXLoader().load('../../avatars/Ch36_nonPBR.fbx', o=>{
+  const out={ms:Math.round(performance.now()-t0), anims:o.animations.map(a=>[a.name,a.duration]), meshes:[], bones:[], box:null};
+  o.updateMatrixWorld(true);
+  const b=new THREE.Box3().setFromObject(o); out.box=[b.min.toArray(),b.max.toArray()];
+  o.traverse(c=>{
+    if(c.isMesh){const m=[].concat(c.material); out.meshes.push({name:c.name,skinned:!!c.isSkinnedMesh,verts:c.geometry.attributes.position.count,mats:m.map(x=>({n:x.name,type:x.type,map:x.map?x.map.name||x.map.image?.src?.slice(0,60):null,normal:!!x.normalMap,color:x.color?.getHexString()}))});}
+    if(c.isBone){const p=new THREE.Vector3();c.getWorldPosition(p);out.bones.push([c.name,p.toArray().map(v=>+v.toFixed(2))]);}
+  });
+  window.__probe=out;
+},undefined,e=>{window.__probe={err:String(e)}});
+</script></body></html>

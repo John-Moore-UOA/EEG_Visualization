@@ -104,3 +104,46 @@ Build a single `index.html` using Three.js from a CDN that shows EEG band power 
 3. **Design agent**: critique the screenshots against the spec using the design-critique skill, and push back on the coder's deviations.
 4. Iterate coder ↔ reviewers until there are no console errors and the acceptance checks pass.
 5. Final reply to the user: how to switch from mock to live, i.e. run `python bridge.py` (or `--mock` to test), then open `index.html?source=ws&url=ws://localhost:8765`.
+
+## STUDIO (2026-10-31): `studio/`, the avatar version
+A new multi-module app. `index.html` (procedural head) is left untouched.
+
+**Run it:**
+1. `python -m http.server 8000` (from the project root)
+2. Open `http://localhost:8000/studio/`
+3. Optional URL parameters: `?theme=dusk|ember|aurora|clinical`, `&finish=graphite|porcelain|skin|hologram`, `&mode=topo|network|feedback|duo`, `&avatar=../avatars/X.fbx`, `&source=ws&url=ws://localhost:8765`.
+
+**Files:**
+- `studio/js/config.js`: bands, montage (+X = subject's left, matching Mixamo), themes and colour maps.
+- `studio/js/data.js`: MockSource v2. It has simulated states (rest/focus/relax/drowsy/auto) and state networks: fronto-parietal beta in focus, posterior alpha in relax. It also has blinks, loose-contact artefacts and a SharedDrive for duo coupling, plus the WebSocket source and parser (same as v1).
+- `studio/js/store.js`: BandPowerStore plus Analytics, which covers:
+  - metrics: engagement, relaxation, FAA, θ/β;
+  - baseline dB;
+  - envelope correlation (AEC);
+  - median-jitter quality;
+  - the band-to-spectrum estimate;
+  - inter-brain sync.
+- `studio/js/avatar.js`:
+  - FBX/GLB loading, normalised to metres;
+  - relaxes the T-pose generically by aiming bones;
+  - idle motion and the four finishes;
+  - samples the head (verts weighted to the Head bone, densified) into head-bone space;
+  - `fitHeadFrame()` produces the 10-20 frame plus a radial height map.
+- `studio/js/topo.js`:
+  - the shrink-wrapped cap: ideal sphere direction → ellipsoid → height map;
+  - Perrin spline (λ 1e-7);
+  - electrodes, quality rings, cap net, top-14 AEC arcs.
+  - All of it is parented to the head bone, so it follows the motion.
+- `studio/js/fx.js`: stage, neurofeedback aura particles, inter-brain bridge arcs.
+- `studio/js/audio.js`: Sonifier.
+- `studio/js/charts.js`: canvas charts.
+- `studio/js/main.js`: orchestration, camera shots and showcase, modes, UI. `window.__studio` is the automation hook.
+
+**Tests:**
+- `team/studio/shoot.py`: screenshots of every mode, plus console errors.
+- `team/studio/extra.py`: quality, drawer, audio, mobile.
+- `team/studio/aec_sim.mjs`: node check that the synthetic networks are state-specific.
+
+**State:**
+- All modes are verified in headless Chromium. The only console output is two benign FBXLoader warnings.
+- Not tested: real VR headset, drag-and-drop of a second avatar file, live WebSocket into the studio.
